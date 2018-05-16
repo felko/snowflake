@@ -1,0 +1,11 @@
+int mystere = 56;
+int essai = 509;
+while (essai != mystere) {
+    essai = parseInt(input("> "));
+    if (essai < mystere)
+        print("+");
+    else if (essai > mystere)
+        print("-");
+    else
+        print("gagné");
+}

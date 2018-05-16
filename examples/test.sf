@@ -1,0 +1,7 @@
+int x = parseInt(input("> "));
+if (x > 0)
+    print("positif");
+else if (x < 0)
+    print("negatif");
+else
+    print("nul");
