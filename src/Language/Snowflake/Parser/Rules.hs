@@ -131,7 +131,8 @@ term =  try callExpr
     <|> try varExpr
     <|> try listExpr
     <|> litExpr
-    <|> parens (_locNode <$> expr)
+    <|> try (parens (_locNode <$> expr))
+    <|> try tupleExpr
     <?> "expression"
 
 varExpr = VarExpr <$> identifier
@@ -162,8 +163,8 @@ typeExpr =  try fnTExpr
         <|> try litTExpr
         <|> varTExpr
         <|> listTExpr
+        <|> try tupleTExpr
         <|> parens typeExpr
-        <|> tupleTExpr
         <?> "type expression"
 
 varTExpr = VarTExpr <$> identifier

@@ -184,7 +184,6 @@ typeOfExpr (Loc (ListExpr xs) sp) = do
     ts <- mapM (\ x@(Loc _ sp) -> Loc <$> typeOfExpr x <*> pure sp) xs
     Loc t _ <- foldrM intersect (Loc AnyT sp) ts <|> raiseTC TCMismatchError "Expected list to be homogenous" sp
     return (ListT t)
-
 typeOfExpr (Loc (TupleExpr xs) _) = TupleT <$> mapM typeOfExpr xs
 typeOfExpr (Loc (LitExpr lit) _) = return (typeOfLit lit)
 

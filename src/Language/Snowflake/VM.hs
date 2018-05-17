@@ -154,6 +154,8 @@ runInstr (CALL n) = uncons . reverse <$> pop (n + 1) >>= \case
 
 runInstr (BUILD_LIST n) = pop n >>= append . ListVal . reverse
 
+runInstr (BUILD_TUPLE n) = pop n >>= append . TupleVal . reverse
+
 runInstr (ITER n) = head <$> pop 1 >>= \case
     ListVal [] -> runInstr (JUMP n)
     ListVal (next:rest) -> append (ListVal rest) >> append next

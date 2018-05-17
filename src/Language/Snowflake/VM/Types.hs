@@ -40,6 +40,7 @@ data Value
     | BoolVal Bool
     | StrVal String
     | ListVal [Value]
+    | TupleVal [Value]
     | FuncVal Word32
     | NoneVal
     | BuiltinVal ([Value] -> VM Value)
@@ -50,6 +51,7 @@ instance Show Value where
     show (BoolVal b) = show b
     show (StrVal s) = show s
     show (ListVal l) = '[' : intercalate "," (map show l) ++ "]"
+    show (TupleVal t) = '(' : intercalate "," (map show t) ++ ")"
     show (FuncVal segIndex) = "<<function " ++ show segIndex ++ ">>"
     show NoneVal = "None"
     show (BuiltinVal _) = "<<builtin>>"

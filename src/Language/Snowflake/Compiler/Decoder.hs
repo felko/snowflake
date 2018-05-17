@@ -105,11 +105,12 @@ decodeInstr = getWord32be >>= \case
     0x03 -> return IF
     0x04 -> CALL <$> getWord32be
     0x05 -> BUILD_LIST <$> getWord32be
-    0x06 -> STORE <$> getWord32be
-    0x07 -> LOAD <$> getWord32be
-    0x08 -> LOAD_CONST <$> getWord32be
-    0x09 -> JUMP <$> getInt32be
-    0x0A -> ITER <$> getInt32be
+    0x06 -> BUILD_TUPLE <$> getWord32be
+    0x07 -> STORE <$> getWord32be
+    0x08 -> LOAD <$> getWord32be
+    0x09 -> LOAD_CONST <$> getWord32be
+    0x0A -> JUMP <$> getInt32be
+    0x0B -> ITER <$> getInt32be
     b -> fail $ "Unable to decode instruction " ++ show b
 
 decodeHeader :: Decoder (Version, Word32, ByteString)

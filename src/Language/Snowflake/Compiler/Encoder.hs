@@ -83,13 +83,14 @@ encodeInstr GE  = putWord32be 0x34
 encodeInstr GT  = putWord32be 0x35
 encodeInstr RETURN = putWord32be 0x02
 encodeInstr IF = putWord32be 0x03
-encodeInstr (CALL n)       = putWord32be 0x04 >> putWord32be n
-encodeInstr (BUILD_LIST n) = putWord32be 0x05 >> putWord32be n
-encodeInstr (STORE n)      = putWord32be 0x06 >> putWord32be n
-encodeInstr (LOAD n)       = putWord32be 0x07 >> putWord32be n
-encodeInstr (LOAD_CONST n) = putWord32be 0x08 >> putWord32be n
-encodeInstr (JUMP n)       = putWord32be 0x09 >> putInt32be n
-encodeInstr (ITER n)       = putWord32be 0x0A >> putInt32be n
+encodeInstr (CALL n)        = putWord32be 0x04 >> putWord32be n
+encodeInstr (BUILD_LIST n)  = putWord32be 0x05 >> putWord32be n
+encodeInstr (BUILD_TUPLE n) = putWord32be 0x06 >> putWord32be n
+encodeInstr (STORE n)       = putWord32be 0x07 >> putWord32be n
+encodeInstr (LOAD n)        = putWord32be 0x08 >> putWord32be n
+encodeInstr (LOAD_CONST n)  = putWord32be 0x09 >> putWord32be n
+encodeInstr (JUMP n)        = putWord32be 0x0A >> putInt32be n
+encodeInstr (ITER n)        = putWord32be 0x0B >> putInt32be n
 
 encodeHeader :: Encoder (ByteString, Bytecode)
 encodeHeader (hash, (Bytecode _ _ ts v)) = do

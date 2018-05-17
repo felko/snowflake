@@ -41,13 +41,14 @@ data Instr
     | LT | LE | EQ | NEQ | GE | GT
     | RETURN
     | IF
-    | CALL       Word32
-    | BUILD_LIST Word32
-    | STORE      Word32
-    | LOAD       Word32
-    | LOAD_CONST Word32
-    | JUMP       Int32
-    | ITER       Int32
+    | CALL        Word32
+    | BUILD_LIST  Word32
+    | BUILD_TUPLE Word32
+    | STORE       Word32
+    | LOAD        Word32
+    | LOAD_CONST  Word32
+    | JUMP        Int32
+    | ITER        Int32
     deriving (Eq, Show)
 
 data Constant

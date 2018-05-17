@@ -137,6 +137,9 @@ compileExpr (Loc (CallExpr fn args) sp) = do
 compileExpr (Loc (ListExpr lst) sp) = do
     mapM_ compileExpr lst
     addInstr $ BUILD_LIST (genericLength lst)
+compileExpr (Loc (TupleExpr t) sp) = do
+    mapM_ compileExpr t
+    addInstr $ BUILD_TUPLE (genericLength t)
 
 compileBlock :: Loc Block -> Compiler Bytecode ()
 compileBlock = mapM_ compileInstr . _locNode
