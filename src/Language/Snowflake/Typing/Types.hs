@@ -1,4 +1,9 @@
-{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE
+    LambdaCase
+  , TemplateHaskell
+  , MultiParamTypeClasses
+  , FunctionalDependencies
+  #-}
 
 module Language.Snowflake.Typing.Types
   ( Type(..)
@@ -9,12 +14,13 @@ module Language.Snowflake.Typing.Types
   , TypeCheckErrorType(..)
   , TypeCheckError(..)
   , TypeCheck
+  , eval, checkEval
+  , TypeCheckable(..)
+  , sandboxCheck
   , intersect
   , raiseTC
   , printError, printErrors
   ) where
-
--- todo: replace `TypeCheckError TypeCheckErrorType String Span` by `Loc TypeCheckError`
 
 import Language.Snowflake.Parser.AST
 
@@ -76,76 +82,105 @@ instance Show TypeCheckErrorType where
     show TCMismatchError = "Mismatch error"
     show TCUndefinedTypeError = "Undefined type error"
 
-data TypeCheckError = TypeCheckError TypeCheckErrorType String Span
+data TypeCheckError = TypeCheckError TypeCheckErrorType String Loc
     deriving Show
 
-type TypeCheck a = StateT TypeCheckState (ExceptT [TypeCheckError] (Reader ModuleInfo)) a
+type TypeCheckM a = StateT TypeCheckState (ExceptT [TypeCheckError] (Reader ModuleInfo)) a
+type TypeCheck n = n Loc -> TypeCheckM (n (Loc, Type))
 
-intersect :: Loc Type -> Loc Type -> TypeCheck (Loc Type)
-intersect (Loc AnyT sp) (Loc t sp') = return (Loc t (sp <> sp'))
-intersect (Loc t sp) (Loc AnyT sp') = return (Loc t (sp <> sp'))
-intersect (Loc t sp) (Loc t' sp')
-    | t == t'   = return (Loc t (sp <> sp'))
+class IsNode n => TypeCheckable n where
+    check :: TypeCheck n
+
+intersect :: Type -> Type -> TypeCheckM Type
+intersect AnyT t = return t
+intersect t AnyT = return t
+intersect t t'
+    | t == t' = return t
     | otherwise = throwError [] -- raiseTC TCMismatchError ("Failed to intersect " ++ showType t ++ " and " ++ showType t') (sp <> sp')
 
-raiseTC :: TypeCheckErrorType -> String -> Span -> TypeCheck a
-raiseTC t s sp = throwError [TypeCheckError t s sp]
+sandboxCheck :: TypeCheckable n => n Loc -> TypeCheckState -> TypeCheckM (n (Loc, Type))
+sandboxCheck n tcs = lift $ evalStateT (check n) tcs
+
+eval :: TypeCheckable n => n (Loc, Type) -> Type
+eval = snd . nodeData
+
+checkEval :: TypeCheckable n => n Loc -> TypeCheckM (n (Loc, Type), Type)
+checkEval n = do
+    cn <- check n
+    return (cn, eval cn)
+
+raiseTC :: TypeCheckErrorType -> String -> Loc -> TypeCheckM a
+raiseTC t s loc = throwError [TypeCheckError t s loc]
 
 putChunk :: Chunk -> IO ()
 putChunk (ContextChunk s) = setSGR [SetUnderlining NoUnderline] >> putStr s
 putChunk (ErrorChunk s) = setSGR [SetUnderlining SingleUnderline] >> putStr s
 
-firstLast :: Span -> Range
-firstLast sp = (fst $ head sp, snd $ last sp)
-
 data Chunk = ContextChunk String | ErrorChunk String deriving Show
 type ChunkLine   = [Chunk]
 type ErrorOutput = [ChunkLine]
 
-inRange :: (Line, Column) -> Range -> Bool
-(i, j) `inRange` (start, stop)
+inLoc :: (Line, Column) -> Loc -> Bool
+_ `inLoc` VoidLoc = False
+(i, j) `inLoc` (Loc start stop)
     | sourceLine start == sourceLine stop = (i == sourceLine start) && (j >= sourceColumn start) && (j <= sourceColumn stop)
     | (i > sourceLine start) && (i < sourceLine stop) = True
     | i == sourceLine start = j >= sourceColumn start
     | i == sourceLine stop  = j <= sourceColumn stop
     | otherwise = False
 
-inSpan :: (Line, Column) -> Span -> Bool
-pos `inSpan` sp = any (pos `inRange`) sp
+splitSource :: String -> Line -> Loc -> ErrorOutput
+splitSource src offset (Loc f l)
+    | sourceLine f == sourceLine l = [ beforeOffset
+                                     , [ErrorChunk $ map ((srcLines !! sourceLine f) !!) [sourceColumn f..sourceColumn l]]
+                                     , afterOffset ]
+    | otherwise = let (before, startLine) = splitAt (sourceColumn f) (srcLines !! sourceLine f)
+                      bodyLines = map (return . ErrorChunk . (srcLines !!)) [sourceLine f+1..sourceLine l-1]
+                      (stopLine, after) = splitAt (sourceColumn l) (srcLines !! sourceLine l)
+                  in [ beforeOffset
+                     , [ContextChunk before, ErrorChunk startLine]
+                     ] ++ bodyLines ++
+                     [ [ErrorChunk stopLine, ContextChunk after]
+                     ,  afterOffset ]
+    where lineCount = length (lines src)
+          srcLines = lines src
+          startLineIdx = if sourceLine f - offset > 0 then sourceLine f - offset else 1
+          stopLineIdx  = if sourceLine l + offset <= lineCount then sourceLine l + offset else lineCount
+          beforeOffset = map (ContextChunk . (srcLines !!)) [startLineIdx..sourceLine f-1]
+          afterOffset = map (ContextChunk . (srcLines !!)) [sourceLine l+1..stopLineIdx]
 
-splitSource :: String -> Line -> Span -> ErrorOutput
-splitSource src offset sp = output
-    where (f, l) = firstLast sp
-          lineCount = length (lines src)
-          startLine = if sourceLine f - offset > 0 then sourceLine f - offset else 1
-          stopLine  = if sourceLine l + offset <= lineCount then sourceLine l + offset else lineCount
-          idm = length (show stopLine) + 1
-          ls = drop (startLine - 1) . take (sourceLine l + offset) $ lines src
-          indexed = map (\ (i, l) -> (i, map (\ (j, c) -> (i, j, c)) $ zip [1..] l)) . zip [startLine..] $ map (++ "\n") ls
-          groups = map (fmap (groupBy groupF)) indexed
-          groupF (i, j, _) (i', j', _) = (i, j) `inSpan` sp == (i', j') `inSpan` sp
-          output = map toLine groups
-          toLine (i, l) = let lineno = show i ++ replicate (idm - length (show i)) ' ' ++ "| "
-                          in ContextChunk lineno : map toChunk l
-          toChunk [] = ContextChunk ""
-          toChunk g@((i, j, _):_)
-              | (i, j) `inSpan` sp = ErrorChunk (map (\ (_, _, c) -> c) g)
-              | otherwise          = ContextChunk (map (\ (_, _, c) -> c) g)
 
-printErrorSource :: ModuleInfo -> Line -> Span -> IO ()
-printErrorSource (ModuleInfo src path) offset sp = mapM_ putChunk (concat $ splitSource src offset sp)
+-- splitSource :: String -> Line -> [Loc] -> ErrorOutput
+-- splitSource src offset locs = output
+--     where lineCount = length (lines src)
+--           startLine = if sourceLine f - offset > 0 then sourceLine f - offset else 1
+--           stopLine  = if sourceLine l + offset <= lineCount then sourceLine l + offset else lineCount
+--           idm = length (show stopLine) + 1
+--           ls = drop (startLine - 1) . take (sourceLine l + offset) $ lines src
+--           indexed = map (\ (i, l) -> (i, map (\ (j, c) -> (i, j, c)) $ zip [1..] l)) . zip [startLine..] $ map (++ "\n") ls
+--           groups = map (fmap (groupBy groupF)) indexed
+--           groupF (i, j, _) (i', j', _) = (i, j) `inLoc` loc == (i', j') `inLoc` loc
+--           output = map toLine groups
+--           toLine (i, l) = let lineno = show i ++ replicate (idm - length (show i)) ' ' ++ "| "
+--                           in ContextChunk lineno : map toChunk l
+--           toChunk [] = ContextChunk ""
+--           toChunk g@((i, j, _):_)
+--               | (i, j) `inLoc` loc = ErrorChunk (map (\ (_, _, c) -> c) g)
+--               | otherwise          = ContextChunk (map (\ (_, _, c) -> c) g)
+
+printErrorSource :: ModuleInfo -> Line -> Loc -> IO ()
+printErrorSource (ModuleInfo src path) offset loc = mapM_ putChunk (concat $ splitSource src offset loc)
 
 printError :: ModuleInfo -> Line -> TypeCheckError -> IO ()
-printError modInfo@(ModuleInfo src path) offset (TypeCheckError typ msg sp) = do
+printError modInfo@(ModuleInfo src path) offset (TypeCheckError typ msg loc@(Loc f l)) = do
     setSGR [SetColor Foreground Dull Red]
-    let (spFst, spLst) = firstLast sp
-        ls = sourceLine spFst
-        lf = sourceLine spLst
+    let ls = sourceLine f
+        lf = sourceLine l
     if ls == lf
     then putStrLn $ "File " ++ show path ++ ", line " ++ show ls ++ ":"
     else putStrLn $ "File " ++ show path ++ ", lines " ++ show ls ++ " to " ++ show lf ++ ":"
     -- setSGR [Reset]
-    printErrorSource modInfo offset sp
+    printErrorSource modInfo offset loc
     setSGR [SetUnderlining NoUnderline]
     putStrLn $ show typ ++ ": " ++ msg
     setSGR [Reset]

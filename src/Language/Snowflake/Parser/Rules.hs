@@ -13,41 +13,51 @@ import Language.Snowflake.Parser.AST
 import Language.Snowflake.Parser.Lexer
 
 import Control.Applicative ((<$>), (<*>))
+import Data.Functor.Foldable
+import Data.Functor.Compose
 import Data.Functor.Identity (Identity)
 
 import Text.Parsec as P
 import Text.Parsec.Expr
 import Text.Parsec.String
 
-loc :: Parser a -> Parser (Loc a)
+import Data.Semigroup ((<>))
+
+loc :: Parser a -> Parser (Node Loc a)
 loc p = do
     start <- getPosition
     x <- p
     stop <- getPosition
-    return $ Loc x [(start, stop)]
+    return $ Node x (Loc start stop)
 
-program :: Parser Program
-program = Program <$> loc (many (loc instruction))
+decl :: Parser (n Loc) -> Parser (Decl n Loc)
+decl p = Decl <$> loc p
 
-block :: Parser Block
-block =  try (fmap return (loc instruction))
-     <|> braces (many (loc instruction))
-     <?> "block"
+ast :: Functor n => Parser (Node s (n (AST n s))) -> Parser (AST n s)
+ast = fmap fromNode
 
-fnDecl :: Parser FnDecl
+program :: Parser (Program Loc)
+program = Program <$> decl (Block <$> many instruction)
+
+block :: Parser (Decl Block Loc)
+block = decl $ (Block <$> (try (fmap return instruction)
+                      <|> braces (many instruction)
+                      <?> "block"))
+
+fnDecl :: Parser (FnDecl Loc)
 fnDecl = do
     reserved "fn"
     fnName <- identifier
-    fnParams <- parens (commaSep (loc param))
+    fnParams <- parens (commaSep param)
     pos <- getPosition
-    fnRetType <- try (reservedOp "->" >> loc typeExpr) <|> pure (Loc (LitTExpr (Loc NoneTLit [(pos, pos)])) [(pos, pos)])
-    fnBlock <- loc block
+    fnRetType <- try (reservedOp "->" >> typeExpr) <|> pure (terminalVoid LitTExpr_ NoneTLit)
+    fnBlock <- block
     return (FnDecl fnName fnParams fnRetType fnBlock)
 
-param :: Parser Param
-param = Param <$> lexeme (loc typeExpr) <*> identifier
+param :: Parser (Param Loc)
+param = Param <$> lexeme typeExpr <*> identifier
 
-instruction, declareInstr, assignInstr, returnInstr, exprInstr, condInstr, whileInstr, forInstr, fnInstr :: Parser Instruction
+instruction, declareInstr, assignInstr, returnInstr, exprInstr, condInstr, whileInstr, forInstr, fnInstr :: Parser (Decl Instruction Loc)
 instruction =  try exprInstr
            <|> try declareInstr
            <|> try assignInstr
@@ -58,52 +68,52 @@ instruction =  try exprInstr
            <|> forInstr
            <?> "instruction"
 
-declareInstr = do
-    typ  <- loc typeExpr
+declareInstr = decl $ do
+    typ  <- typeExpr
     name <- identifier
     reservedOp "="
     value <- lexeme expr
     semi
     return $ DeclareInstr typ name value
 
-assignInstr = do
+assignInstr = decl $ do
     name <- identifier
     reservedOp "="
     value <- lexeme expr
     semi
     return $ AssignInstr name value
 
-returnInstr = reserved "return" >> ReturnInstr <$> (expr <* semi)
+returnInstr = decl $ reserved "return" >> ReturnInstr <$> (expr <* semi)
 
-exprInstr = ExprInstr <$> (expr <* semi)
+exprInstr = decl $ ExprInstr <$> (expr <* semi)
 
-condInstr = do
+condInstr = decl $ do
     reserved "if"
     cond <- parens expr
-    tr <- loc block
-    fl <- loc $ try (reserved "else" >> block) <|> pure []
+    tr <- block
+    fl <- try (reserved "else" >> block) <|> pure (Decl (Node (Block []) VoidLoc))
     return $ CondInstr cond tr fl
 
-whileInstr = reserved "while" >> WhileInstr <$> parens expr <*> loc block
+whileInstr = decl $ reserved "while" >> WhileInstr <$> parens expr <*> block
 
-forInstr = do
+forInstr = decl $ do
     reserved "for"
     var <- identifier
     reserved "in"
     iter <- lexeme expr
-    loop <- loc block
+    loop <- block
     return $ ForInstr var iter loop
 
-fnInstr = FnInstr <$> loc fnDecl
+fnInstr = decl $ FnInstr <$> fnDecl
 
-unary :: String -> UnOp -> Operator String () Identity (Loc Expr)
+unary :: String -> UnOp -> Operator String () Identity (Expr Loc)
 binary s op assoc = flip Infix assoc $ do
-  Loc _ sp <- loc (reservedOp s)
-  return $ \ x y -> Loc (BinOpExpr op x y) sp
+  reservedOp s
+  return $ \ x y -> fromNode $ Node (BinOpExpr_ op x y) (astNodeData x <> astNodeData y)
 --unary  s op       = Prefix (loc (reservedOp s) >>= \ (Loc _ sp) -> return (\ x -> Loc (UnOpExpr op (Loc x sp)) sp)) -- (loc (reservedOp s) >>= return . Loc (UnOpExpr  op) . _locSpan)
 unary s op = Prefix $ do
-    Loc _ sp <- loc (reservedOp s)
-    return $ \ x -> Loc (UnOpExpr op x) sp
+    Node _ l <- loc (reservedOp s)
+    return $ \ x -> fromNode $ Node (UnOpExpr_ op x) (l <> astNodeData x)
 
 opTable = [ [ binary "^"   PowOp AssocRight ]
           , [ binary "*"   MulOp AssocLeft
@@ -123,26 +133,26 @@ opTable = [ [ binary "^"   PowOp AssocRight ]
           , [ unary  "not" NotOp ]
           ]
 
-expr :: Parser (Loc Expr)
-term, varExpr, callExpr, listExpr, tupleExpr, litExpr :: Parser Expr
-expr = buildExpressionParser opTable (loc term)
+expr :: Parser (Expr Loc)
+term, varExpr, callExpr, listExpr, tupleExpr, litExpr :: Parser (Expr Loc)
+expr = buildExpressionParser opTable term
 
 term =  try callExpr
     <|> try varExpr
     <|> try listExpr
     <|> litExpr
-    <|> try (parens (_locNode <$> expr))
+    <|> try (parens expr)
     <|> try tupleExpr
     <?> "expression"
 
-varExpr = VarExpr <$> identifier
+varExpr = terminal VarExpr_ <$> loc identifier
 callExpr = do
-    Loc fn sp <- loc identifier
-    args <- parens (commaSep expr)
-    return $ CallExpr (Loc (VarExpr fn) sp) args
-listExpr = ListExpr <$> brackets (commaSep expr)
-tupleExpr = TupleExpr <$> parens (commaSep expr)
-litExpr = LitExpr <$> loc literal
+    Node fn l <- loc identifier
+    Node args l' <- loc $ parens (commaSep expr)
+    return . fromNode $ Node (CallExpr_ (terminal VarExpr_ (Node fn l)) args) (l <> l')
+listExpr = fromNode . fmap ListExpr_ <$> loc (brackets (commaSep expr))
+tupleExpr = fromNode . fmap TupleExpr_ <$> loc (parens (commaSep expr))
+litExpr = terminal LitExpr_ <$> loc literal
 
 literal, intLit, floatLit, boolLit, strLit, noneLit :: Parser Literal
 literal =  try floatLit
@@ -158,7 +168,7 @@ boolLit = BoolLit <$> ((reserved "true" >> return True) <|> (reserved "false" >>
 strLit = StrLit <$> stringLiteral
 noneLit = reserved "none" >> return NoneLit
 
-typeExpr, varTExpr, listTExpr, tupleTExpr, fnTExpr, litTExpr :: Parser TypeExpr
+typeExpr, varTExpr, listTExpr, tupleTExpr, fnTExpr, litTExpr :: Parser (TypeExpr Loc)
 typeExpr =  try fnTExpr
         <|> try litTExpr
         <|> varTExpr
@@ -167,16 +177,16 @@ typeExpr =  try fnTExpr
         <|> parens typeExpr
         <?> "type expression"
 
-varTExpr = VarTExpr <$> identifier
-listTExpr = ListTExpr <$> brackets (loc typeExpr)
-tupleTExpr = TupleTExpr <$> parens (commaSep (loc typeExpr))
+varTExpr = terminal VarTExpr_ <$> loc identifier
+listTExpr = fromNode . fmap ListTExpr_ <$> loc (brackets typeExpr)
+tupleTExpr = fromNode . fmap TupleTExpr_ <$> loc (parens (commaSep typeExpr))
 fnTExpr = do
-    reserved "fn"
-    paramTypes <- parens (many (loc typeExpr))
+    Node _ l <- loc $ reserved "fn"
+    paramTypes <- parens (many typeExpr)
     reservedOp "->"
-    retType <- loc typeExpr
-    return $ FnTExpr paramTypes retType
-litTExpr = LitTExpr <$> loc typeLiteral
+    retType <- typeExpr
+    return . fromNode $ Node (FnTExpr_ paramTypes retType) (l <> astNodeData retType)
+litTExpr = terminal LitTExpr_ <$> loc typeLiteral
 
 typeLiteral :: Parser TypeLiteral
 typeLiteral =  try (reserved "int" >> return IntTLit)

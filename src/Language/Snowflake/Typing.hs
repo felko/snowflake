@@ -1,9 +1,8 @@
 module Language.Snowflake.Typing
     ( module Exports
-    , typeCheckProgram
-    , typeCheckInstr
-    , typeCheckExpr
-    , typeCheckTypeExpr
+    , runTypeCheck
+    , evalTypeCheck
+    , execTypeCheck
     ) where
 
 import Language.Snowflake.Typing.TypeCheck as Exports
@@ -18,17 +17,26 @@ import Control.Monad.Except
 import qualified Data.Map as Map
 import qualified Data.ChainMap as Env
 
-typeCheckProgram :: Program -> ModuleInfo -> Bindings -> TypeEnv -> Either [TypeCheckError] TypeCheckState
-typeCheckProgram (Program is) modInfo bs ts = runReader (runExceptT (execStateT (checkBlock is) (defaultTCState bs ts))) modInfo
+-- typeCheckProgram :: Program Loc -> ModuleInfo -> Bindings -> TypeEnv -> Either [TypeCheckError] (Program (Loc, Type))
+-- typeCheckProgram (Program is) modInfo bs ts = runReader (runExceptT (evalStateT (check is) (defaultTCState bs ts))) modInfo
+--
+-- typeCheckInstr :: Instruction Loc -> ModuleInfo -> Bindings -> TypeEnv -> Either [TypeCheckError] (Instruction (Loc, Type))
+-- typeCheckInstr instr modInfo bs ts = runReader (runExceptT (evalStateT (checkInstr instr) (defaultTCState bs ts))) modInfo
+--
+-- typeCheckExpr :: Expr Loc -> ModuleInfo -> Bindings -> TypeEnv -> Either [TypeCheckError] (Expr (Loc, Type))
+-- typeCheckExpr expr modInfo bs ts = runReader (runExceptT (evalStateT (typeOfExpr expr) (defaultTCState bs ts))) modInfo
+--
+-- typeCheckTypeExpr :: TypeExpr Loc -> ModuleInfo -> TypeEnv -> Either [TypeCheckError] (TypeExpr (Loc, Type))
+-- typeCheckTypeExpr tExpr modInfo ts = runReader (runExceptT (evalStateT (evaluateTypeExpr tExpr) (defaultTCState Env.empty ts))) modInfo
 
-typeCheckInstr :: Loc Instruction -> ModuleInfo -> Bindings -> TypeEnv -> Either [TypeCheckError] TypeCheckState
-typeCheckInstr instr modInfo bs ts = runReader (runExceptT (execStateT (checkInstr instr) (defaultTCState bs ts))) modInfo
+runTypeCheck :: TypeCheckable n => n Loc -> ModuleInfo -> Bindings -> TypeEnv -> Either [TypeCheckError] (n (Loc, Type), TypeCheckState)
+runTypeCheck n modInfo bs ts = runReader (runExceptT (runStateT (check n) (defaultTCState bs ts))) modInfo
 
-typeCheckExpr :: Loc Expr -> ModuleInfo -> Bindings -> TypeEnv -> Either [TypeCheckError] Type
-typeCheckExpr expr modInfo bs ts = runReader (runExceptT (evalStateT (typeOfExpr expr) (defaultTCState bs ts))) modInfo
+evalTypeCheck :: TypeCheckable n => n Loc -> ModuleInfo -> Bindings -> TypeEnv -> Either [TypeCheckError] (n (Loc, Type))
+evalTypeCheck n modInfo bs ts = fst <$> runTypeCheck n modInfo bs ts
 
-typeCheckTypeExpr :: Loc TypeExpr -> ModuleInfo -> TypeEnv -> Either [TypeCheckError] Type
-typeCheckTypeExpr tExpr modInfo ts = runReader (runExceptT (evalStateT (evaluateTypeExpr tExpr) (defaultTCState Env.empty ts))) modInfo
+execTypeCheck :: TypeCheckable n => n Loc -> ModuleInfo -> Bindings -> TypeEnv -> Either [TypeCheckError] TypeCheckState
+execTypeCheck n modInfo bs ts = snd <$> runTypeCheck n modInfo bs ts
 
 defaultTCState :: Bindings -> TypeEnv -> TypeCheckState
 defaultTCState bs ts = TypeCheckState

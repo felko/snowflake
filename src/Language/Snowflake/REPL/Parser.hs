@@ -10,7 +10,7 @@ import Data.Tuple (swap)
 
 replInput :: Parser REPLInput
 replInput =  try (char ':' >> Command <$> replCommand <* eof)
-         <|> try (Instr <$> (raw $ loc instruction) <* (spaces >> eof))
+         <|> try (Instr <$> (raw $ instruction) <* (spaces >> eof))
          <|> try (Expr <$> raw expr <* (spaces >> eof))
          <|> ((spaces <* eof) >> return NoInput)
 

@@ -10,6 +10,7 @@ import Prelude hiding (Ordering(..))
 
 import Language.Snowflake.Parser.AST
 import Language.Snowflake.Compiler.Types
+import Language.Snowflake.Typing.Types
 
 import Control.Lens
 import Control.Applicative ((<|>))
@@ -26,6 +27,12 @@ import Data.Time.Clock.POSIX (getPOSIXTime)
 import Paths_snowflake (version)
 
 type Compiler s a = State s a
+
+nodeLoc :: Node (Loc, Type) s -> Loc
+nodeLoc (Node _ (loc, _)) = loc
+
+nodeType :: Node (Loc, Type) s -> Type
+nodeType (Node _ (_, typ)) = typ
 
 liftTopLevel :: Compiler Segment a -> Compiler Bytecode a
 liftTopLevel sc = do
@@ -98,7 +105,7 @@ instantiateVariable var = elemIndex var <$> gets _segSymbols >>= \case
       Just i -> addInstr $ LOAD (fromIntegral i)
       Nothing -> addInstr =<< LOAD <$> newSymbol var
 
-binOp :: BinOp -> Loc Expr -> Loc Expr -> Compiler Segment ()
+binOp :: BinOp -> Expr (Loc, Type) -> Expr (Loc, Type) -> Compiler Segment ()
 binOp op a b = do
     compileExpr a
     compileExpr b
@@ -117,7 +124,7 @@ binOp op a b = do
         GEOp  -> GE
         GTOp  -> GT
 
-unOp :: UnOp -> Loc Expr -> Compiler Segment ()
+unOp :: UnOp -> Expr (Loc, Type) -> Compiler Segment ()
 unOp op x = do
     compileExpr x
     addInstr $ case op of
@@ -125,37 +132,37 @@ unOp op x = do
         NegOp -> NEG
         NotOp -> NOT
 
-compileExpr :: Loc Expr -> Compiler Segment ()
-compileExpr (Loc (VarExpr name) sp) = instantiateVariable name
-compileExpr (Loc (LitExpr lit) sp)  = addInstr =<< (LOAD_CONST <$> newConstant (literalToConstant (_locNode lit)))
-compileExpr (Loc (BinOpExpr op a b) sp) = binOp op a b
-compileExpr (Loc (UnOpExpr op x) sp) = unOp op x
-compileExpr (Loc (CallExpr fn args) sp) = do
+compileExpr :: Expr (Loc, Type) -> Compiler Segment ()
+compileExpr (VarExpr name) = instantiateVariable name
+compileExpr (LitExpr lit) = addInstr =<< (LOAD_CONST <$> newConstant (literalToConstant lit))
+compileExpr (BinOpExpr op a b) = binOp op a b
+compileExpr (UnOpExpr op x) = unOp op x
+compileExpr (CallExpr fn args) = do
     compileExpr fn
     mapM_ compileExpr args
     addInstr $ CALL (genericLength args)
-compileExpr (Loc (ListExpr lst) sp) = do
+compileExpr (ListExpr lst) = do
     mapM_ compileExpr lst
     addInstr $ BUILD_LIST (genericLength lst)
-compileExpr (Loc (TupleExpr t) sp) = do
+compileExpr (TupleExpr t) = do
     mapM_ compileExpr t
     addInstr $ BUILD_TUPLE (genericLength t)
 
-compileBlock :: Loc Block -> Compiler Bytecode ()
-compileBlock = mapM_ compileInstr . _locNode
+compileBlock :: Decl Block (Loc, Type) -> Compiler Bytecode ()
+compileBlock (Decl (Node (Block block) _)) = mapM_ compileInstr block
 
-compileInstr :: Loc Instruction -> Compiler Bytecode ()
-compileInstr (Loc (DeclareInstr _ name val) sp) = liftTopLevel $ do
+compileInstr :: Decl Instruction (Loc, Type) -> Compiler Bytecode ()
+compileInstr (Decl (Node (DeclareInstr _ name val) _)) = liftTopLevel $ do
     i <- newSymbol name
     compileExpr val
     addInstr (STORE i)
-compileInstr (Loc (AssignInstr name val) sp) = liftTopLevel $ do
+compileInstr (Decl (Node (AssignInstr name val) _)) = liftTopLevel $ do
     i <- newSymbol name
     compileExpr val
     addInstr (STORE i)
-compileInstr (Loc (ReturnInstr val) sp) = liftTopLevel $ compileExpr val >> addInstr RETURN
-compileInstr (Loc (ExprInstr expr) sp) = liftTopLevel $ compileExpr expr >> addInstr POP
-compileInstr (Loc (CondInstr cond tr fl) sp) = do
+compileInstr (Decl (Node (ReturnInstr val) _)) = liftTopLevel $ compileExpr val >> addInstr RETURN
+compileInstr (Decl (Node (ExprInstr expr) _)) = liftTopLevel $ compileExpr expr >> addInstr POP
+compileInstr (Decl (Node (CondInstr cond tr fl) _)) = do
     condInstrs <- sandboxSegment (compileExpr cond)
     trInstrs <- sandboxBytecode (compileBlock tr)
     flInstrs <- sandboxBytecode (compileBlock fl)
@@ -169,7 +176,7 @@ compileInstr (Loc (CondInstr cond tr fl) sp) = do
         addInstrs trInstrs
         addInstr $ JUMP flOffset
         addInstrs flInstrs
-compileInstr (Loc (ForInstr var iter loop) sp) = do
+compileInstr (Decl (Node (ForInstr var iter loop) _)) = do
     loopInstrs <- sandboxBytecode (compileBlock loop)
     let loopOffset = genericLength loopInstrs
     liftTopLevel $ do
@@ -179,7 +186,7 @@ compileInstr (Loc (ForInstr var iter loop) sp) = do
         addInstr $ STORE iVar
         addInstrs loopInstrs
         addInstr $ JUMP (-loopOffset-3)
-compileInstr (Loc (WhileInstr cond loop) sp) = do
+compileInstr (Decl (Node (WhileInstr cond loop) _)) = do
     condInstrs <- sandboxSegment (compileExpr cond)
     loopInstrs <- sandboxBytecode (compileBlock loop)
     let condOffset = genericLength condInstrs
@@ -192,9 +199,9 @@ compileInstr (Loc (WhileInstr cond loop) sp) = do
         addInstr $ JUMP loopOffset
         addInstrs loopInstrs
         addInstr $ JUMP (-offset-4)
-compileInstr (Loc (FnInstr (Loc (FnDecl name params _ body) _)) sp) = do
+compileInstr (Decl (Node (FnInstr (FnDecl name params _ body)) _)) = do
     bytecode <- get
-    let paramSymbols = map (_paramName . _locNode) params
+    let paramSymbols = map _paramName params
         initSegment  = defaultSegment & segSymbols .~ paramSymbols
         initState    = bytecode & bcTopLevel .~ initSegment
         funcBytecode = execState (compileBlock body) initState
@@ -206,5 +213,5 @@ compileInstr (Loc (FnInstr (Loc (FnDecl name params _ body) _)) sp) = do
         addInstr $ LOAD_CONST iConst
         addInstr $ STORE iSymbol
 
-compileProgram :: Program -> Compiler Bytecode ()
+compileProgram :: Program (Loc, Type) -> Compiler Bytecode ()
 compileProgram (Program instrs) = compileBlock instrs

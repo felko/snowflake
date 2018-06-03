@@ -41,31 +41,30 @@ loopREPL = do
     else
         return ()
 
-incSpanLines :: Span -> Line -> Span
-incSpanLines sp offset = map (\ (start, stop) -> (incSourceLine start offset, incSourceLine stop offset)) sp
+incNodeLocLines :: IsNode n => n Loc -> Line -> n Loc
+incNodeLocLines node offset = nodeUpdate node incLocLines
+    where incLocLines VoidLoc = VoidLoc
+          incLocLines (Loc start stop) = Loc (incSourceLine start offset) (incSourceLine stop offset)
 
-incLocLines :: Loc a -> Line -> Loc a
-incLocLines (Loc x sp) offset = Loc x (incSpanLines sp offset)
-
-updateLineNo :: Loc a -> REPL (Loc a)
-updateLineNo loc = do
+updateNodeLineNo :: IsNode n => n Loc -> REPL (n Loc)
+updateNodeLineNo node = do
     offset <- lift $ gets _replLine
-    return (incLocLines loc offset)
+    return (incNodeLocLines node offset)
 
 bindVar :: Name -> Type -> REPL ()
 bindVar name typ = lift $ replBindings %= Env.insert name typ
 
 runREPLInput :: REPLInput -> REPL ()
 runREPLInput (Instr (instr', src)) = do
-    instr <- updateLineNo instr'
+    instr <- updateNodeLineNo instr'
     let modInfo = ModuleInfo src "<<instr>>"
     typeEnv <- lift . lift $ gets _vmTypeEnv
     bindings <- lift (gets _replBindings)
-    case typeCheckInstr instr modInfo bindings typeEnv of
-        Right tc -> do
+    case runTypeCheck instr modInfo bindings typeEnv of
+        Right (cinstr, tc) -> do
             VMState{..} <- lift (lift get)
             let bc = Bytecode _vmSegments (Segment _vmConstants _vmSymbols []) 0 version
-                Bytecode ss seg' _ _ = execState (compileInstr instr) bc
+                Bytecode ss seg' _ _ = execState (compileInstr cinstr) bc
             lift . lift $ applySegment seg'
             lift $ replBindings .= _tcBindings tc
         Left errs -> printTypeCheckErrors modInfo errs
@@ -73,11 +72,11 @@ runREPLInput (Expr (expr, src)) = do
     let modInfo = ModuleInfo src "<<expr>>"
     typeEnv <- lift . lift $ gets _vmTypeEnv
     bindings <- lift (gets _replBindings)
-    case typeCheckExpr expr modInfo bindings typeEnv of
-        Right tc -> do
+    case runTypeCheck expr modInfo bindings typeEnv of
+        Right (cexpr, tc) -> do
             VMState{..} <- lift (lift get)
             let seg  = Segment _vmConstants _vmSymbols []
-                seg' = execState (compileExpr expr) seg
+                seg' = execState (compileExpr cexpr) seg
             val <- lift . lift $ applySegment seg' >> gets (head . view vmStack)
             outputStrLn (show val)
         Left errs -> printTypeCheckErrors modInfo errs
@@ -104,8 +103,8 @@ runREPLCommand (Type (expr, src)) = do
     let modInfo = ModuleInfo src "<<expr>>"
     typeEnv <- lift . lift $ gets _vmTypeEnv
     bindings <- lift (gets _replBindings)
-    case typeCheckExpr expr modInfo bindings typeEnv of
-        Right typ -> outputStrLn (showType typ)
+    case evalTypeCheck expr modInfo bindings typeEnv of
+        Right cexpr -> outputStrLn (showType (eval cexpr))
         Left errs -> printTypeCheckErrors modInfo errs
 runREPLCommand (Load path) = do
       outputStrLn $ "Loading " ++ path ++ "..."
@@ -115,15 +114,15 @@ runREPLCommand (Load path) = do
       st@VMState{..} <- lift (lift get)
       bindings <- lift (gets _replBindings)
       case mst of
-          Right ast -> case typeCheckProgram ast modInfo bindings _vmTypeEnv of
+          Right ast -> case runTypeCheck ast modInfo bindings _vmTypeEnv of
               Left errs -> printTypeCheckErrors modInfo errs
-              Right tc -> do
+              Right (cast, tc) -> do
                   let initCompilerState = Bytecode
                           { _bcSegments  = _vmSegments
                           , _bcTopLevel  = Segment _vmConstants _vmSymbols []
                           , _bcTimestamp = 0
                           , _bcVersion   = _vmVersion }
-                  let Bytecode segments (Segment c s i) _ _ = execState (compileProgram ast) initCompilerState
+                  let Bytecode segments (Segment c s i) _ _ = execState (compileProgram cast) initCompilerState
                   let initState = st
                           { _vmStack      = []
                           , _vmConstants  = c

@@ -33,14 +33,13 @@ makeLenses ''REPLState
 type REPL a = InputT (StateT REPLState (StateT VMState (ExceptT VMException IO))) a
 
 data REPLInput
-    = Instr   (Loc Instruction, String)
-    | Expr    (Loc Expr, String)
+    = Instr   (Decl Instruction Loc, String)
+    | Expr    (Expr Loc, String)
     | Command REPLCommand
     | NoInput
-    deriving Show
 
 data REPLCommand
-    = Type (Loc Expr, String)
+    = Type (Expr Loc, String)
     | Load FilePath
     | Reload
     | Quit

@@ -14,16 +14,16 @@ import Text.Parsec
 import Text.Parsec.String
 import Text.Parsec.Error
 
-parseString :: String -> Either ParseError Program
+parseString :: String -> Either ParseError (Program Loc)
 parseString = parseRule (program <* eof)
 
-parseExpr :: String -> Either ParseError Expr
-parseExpr = parseRule (fmap _locNode expr <* eof)
+parseExpr :: String -> Either ParseError (Expr Loc)
+parseExpr = parseRule (expr <* eof)
 
 parseRule :: Parser a -> String -> Either ParseError a
 parseRule = flip parse "(string)" . (<* eof)
 
-parseFile :: String -> IO (Either ParseError Program)
+parseFile :: String -> IO (Either ParseError (Program Loc))
 parseFile path = parse (program <* eof) path <$> readFile path
 
 forceRight :: Show a => Either a b -> b

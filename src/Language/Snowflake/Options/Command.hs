@@ -56,10 +56,10 @@ executeFile ExecuteOptions{..} = do
     case mst of
         Right ast -> do
             when _eoShowAST (putStrLn $ showAST ast)
-            case typeCheckProgram ast modInfo (Env.singleMap defaultBindings) (Env.singleMap defaultTypeEnv) of
+            case evalTypeCheck ast modInfo (Env.singleMap defaultBindings) (Env.singleMap defaultTypeEnv) of
                 Left errs -> printErrors modInfo _eoErrorOffset errs
-                Right _ -> do
-                    bytecode <- execCompiler (compileProgram ast)
+                Right cast -> do
+                    bytecode <- execCompiler (compileProgram cast)
                     when _eoShowBytecode (putStrLn $ showBytecode bytecode)
                     start <- getCurrentTime
                     runBytecode bytecode (Env.singleMap defaultEnv) (Env.singleMap defaultTypeEnv) _eoDebug
@@ -74,10 +74,10 @@ executeString StringOptions{..} = do
     case parse (program <* eof) "<<string>>" _soString of
         Right ast -> do
             when _soShowAST (putStrLn $ showAST ast)
-            case typeCheckProgram ast modInfo (Env.singleMap defaultBindings) (Env.singleMap defaultTypeEnv) of
+            case evalTypeCheck ast modInfo (Env.singleMap defaultBindings) (Env.singleMap defaultTypeEnv) of
                 Left errs -> printErrors modInfo _soErrorOffset errs
-                Right _ -> do
-                    bytecode <- execCompiler (compileProgram ast)
+                Right cast -> do
+                    bytecode <- execCompiler (compileProgram cast)
                     when _soShowBytecode (putStrLn $ showBytecode bytecode)
                     start <- getCurrentTime
                     runBytecode bytecode (Env.singleMap defaultEnv) (Env.singleMap defaultTypeEnv) _soDebug
@@ -94,10 +94,10 @@ compile CompileOptions{..} = do
     case mast of
         Right ast -> do
             when _coShowAST (putStrLn $ showAST ast)
-            case typeCheckProgram ast modInfo (Env.singleMap defaultBindings) (Env.singleMap defaultTypeEnv) of
+            case evalTypeCheck ast modInfo (Env.singleMap defaultBindings) (Env.singleMap defaultTypeEnv) of
                 Left errs -> printErrors modInfo _coErrorOffset errs
-                Right _ -> do
-                    bytecode <- execCompiler (compileProgram ast)
+                Right cast -> do
+                    bytecode <- execCompiler (compileProgram cast)
                     when _coShowBytecode (putStrLn $ showBytecode bytecode)
                     let outputPath = case _coOutput of
                           Just p  -> p

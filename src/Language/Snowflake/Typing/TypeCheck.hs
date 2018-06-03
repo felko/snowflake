@@ -1,11 +1,14 @@
-{-# LANGUAGE LambdaCase, TupleSections #-}
+{-# LANGUAGE
+    MultiParamTypeClasses
+  , TypeSynonymInstances
+  , FlexibleInstances
+  , LambdaCase
+  , TupleSections
+  #-}
 
 module Language.Snowflake.Typing.TypeCheck
-    ( checkInstr
-    , checkBlock
-    , evaluateTypeExpr
-    , typeOfExpr
-    , typeOfLit
+    ( evalLiteral
+    , evalTypeLiteral
     ) where
 
 import Language.Snowflake.Typing.Types
@@ -23,173 +26,186 @@ import Control.Monad
 import Control.Monad.State
 import Control.Monad.Except
 
+import Data.Functor.Foldable
+import Data.Functor.Compose
 import Data.Foldable (foldrM)
 import qualified Data.Map as Map
 import Data.List (intercalate)
 
-checkBlock :: Loc Block -> TypeCheck ()
-checkBlock = mapM_ checkInstr . _locNode
+instance TypeCheckable Program where
+    check (Program instrs) = Program <$> check instrs
 
-checkInstr :: Loc Instruction -> TypeCheck ()
-checkInstr (Loc (DeclareInstr te v e) sp) = do
-    t  <- evaluateTypeExpr te
-    t' <- Loc <$> typeOfExpr e <*> pure (_locSpan e)
-    t'' <- intersect (Loc t (_locSpan te)) t' <|> raiseTC TCMismatchError ("Couldn't declare value of expected type " ++ showType t ++ " with actual type " ++ showType (_locNode t')) sp
-    tcBindings %= Env.insert v (_locNode t'')
-checkInstr (Loc (AssignInstr v e) sp) = do
-    t  <- typeOfExpr (Loc (VarExpr v) sp)
-    t' <- Loc <$> typeOfExpr e <*> pure (_locSpan e)
-    intersect (Loc t sp) t' <|> raiseTC TCMismatchError ("Couldn't assign value of expected type " ++ showType t ++ " with actual type " ++ showType (_locNode t')) sp
-    return ()
-checkInstr (Loc (ReturnInstr e) sp) = do
-    t  <- gets _tcExpected
-    t' <- Loc <$> typeOfExpr e <*> pure (_locSpan e)
-    intersect (Loc t (_locSpan e)) t' <|> raiseTC TCMismatchError ("Couldn't return value of expected type " ++ showType t ++ " with actual type " ++ showType (_locNode t')) sp
-    return ()
-checkInstr (Loc (ExprInstr e) sp) = typeOfExpr e >> return ()
-checkInstr (Loc (CondInstr cond tr fl) _) = do
-    condT <- Loc <$> typeOfExpr cond <*> pure (_locSpan cond)
-    intersect condT (Loc BoolT (_locSpan cond)) <|> raiseTC TCMismatchError ("Expected value of type bool, got " ++ showType (_locNode condT)) (_locSpan cond)
-    checkBlock tr
-    checkBlock fl
-checkInstr (Loc (WhileInstr cond loop) _) = do
-    condT <- Loc <$> typeOfExpr cond <*> pure (_locSpan cond)
-    intersect condT (Loc BoolT (_locSpan cond)) <|> raiseTC TCMismatchError ("Expected value of type bool, got " ++ showType (_locNode condT)) (_locSpan cond)
-    checkBlock loop
-checkInstr (Loc (ForInstr var iter loop) sp) = typeOfExpr iter >>= \case
-    ListT t -> do
+instance TypeCheckable (Decl Block) where
+    check (Decl (Node (Block instrs) loc)) = do
+        cinstrs <- mapM check instrs
+        return . Decl $ Node (Block cinstrs) (loc, NoneT)
+
+instance TypeCheckable (Decl Instruction) where
+    check (Decl (Node (DeclareInstr te v e) loc)) = do
+        (cte, t)  <- checkEval te
+        (ce, t') <- checkEval e
+        t'' <- intersect t t' <|> raiseTC TCMismatchError ("Couldn't declare value of expected type " ++ showType t ++ " with actual type " ++ showType t') loc
+        tcBindings %= Env.insert v t''
+        return . Decl $ Node (DeclareInstr cte v ce) (loc, NoneT)
+    check (Decl (Node (AssignInstr v e) loc)) = do
+        (_, t) <- checkEval (fromNode (Node (VarExpr_ v) loc))
+        (ce, t') <- checkEval e
+        intersect t t' <|> raiseTC TCMismatchError ("Couldn't assign value of expected type " ++ showType t ++ " with actual type " ++ showType t') loc
+        return . Decl $ Node (AssignInstr v ce) (loc, NoneT)
+    check (Decl (Node (ReturnInstr e) loc)) = do
+        t  <- gets _tcExpected
+        (ce, t') <- checkEval e
+        intersect t t' <|> raiseTC TCMismatchError ("Couldn't return value of expected type " ++ showType t ++ " with actual type " ++ showType t') loc
+        return . Decl $ Node (ReturnInstr ce) (loc, NoneT)
+    check (Decl (Node (ExprInstr e) loc)) = do
+        ce <- check e
+        return . Decl $ Node (ExprInstr ce) (loc, NoneT)
+    check (Decl (Node (CondInstr cond tr fl) loc)) = do
+        (ccond, condT) <- checkEval cond
+        intersect condT BoolT <|> raiseTC TCMismatchError ("Expected value of type bool, got " ++ showType condT) (astNodeData cond)
+        ctr <- check tr
+        cfl <- check fl
+        return . Decl $ Node (CondInstr ccond ctr cfl) (loc, NoneT)
+    check (Decl (Node (WhileInstr cond loop) loc)) = do
+        (ccond, condT) <- checkEval cond
+        intersect condT BoolT <|> raiseTC TCMismatchError ("Expected value of type bool, got " ++ showType condT) (astNodeData cond)
+        cloop <- check loop
+        return . Decl $ Node (WhileInstr ccond cloop) (loc, NoneT)
+    check (Decl (Node (ForInstr var iter loop) loc)) = checkEval iter >>= \case
+        (citer, ListT t) -> do
+            tcs <- get
+            cloop <- sandboxCheck loop $ tcs & tcBindings %~ Env.newChild (Map.singleton var t)
+            return . Decl $ Node (ForInstr var citer cloop) (loc, NoneT)
+        (citer, t) -> raiseTC TCMismatchError ("Expected iterable, got " ++ showType t) (astNodeData iter)
+    check (Decl (Node (FnInstr (FnDecl name params ret body)) loc)) = do
         tcs <- get
-        lift $ execStateT (checkBlock loop) (tcs & tcBindings %~ Env.newChild (Map.singleton var t))
-        return ()
-    t -> raiseTC TCMismatchError ("Expected iterable, got " ++ showType t) (_locSpan iter)
-checkInstr (Loc (FnInstr (Loc (FnDecl name params ret body) _)) sp) = do
-    tcs <- get
-    t <- evaluateTypeExpr ret
-    pt <- mapM (evaluateTypeExpr . _paramType . _locNode) params
-    let ps = Map.fromList $ zip (map (_paramName . _locNode) params) pt
-    lift $ execStateT (checkBlock body) $ tcs & tcBindings  %~ Env.newChild ps
-                                              & tcExpected .~ t
-    tcBindings %= Env.insert name (FuncT pt t)
-    return ()
+        (cret, tret) <- checkEval ret
+        (cparams, pt) <- unzip <$> mapM checkEval params
+        let ps = Map.fromList $ zip (map _paramName params) pt
+        cbody <- sandboxCheck body $ tcs & tcBindings %~ Env.newChild ps
+                                         & tcExpected .~ tret
+        tcBindings %= Env.insert name (FuncT pt tret)
+        return . Decl $ Node (FnInstr (FnDecl name cparams cret cbody)) (loc, NoneT)
 
-evaluateTypeExpr :: Loc TypeExpr -> TypeCheck Type
-evaluateTypeExpr (Loc (VarTExpr var) sp) = gets (Env.lookup var . _tcTypeEnv) >>= \case
-    Just t  -> return t
-    Nothing -> raiseTC TCUndefinedTypeError ("Type " ++ show var ++ " is undefined") sp
-evaluateTypeExpr (Loc (ListTExpr t) sp) = ListT <$> evaluateTypeExpr t
-evaluateTypeExpr (Loc (TupleTExpr ts) sp) = TupleT <$> mapM evaluateTypeExpr ts
-evaluateTypeExpr (Loc (FnTExpr ts r) sp) = FuncT <$> mapM evaluateTypeExpr ts <*> evaluateTypeExpr r
-evaluateTypeExpr (Loc (LitTExpr lit) sp) = return (typeOfTypeLit lit)
+instance TypeCheckable Param where
+    check (Param t n) = Param <$> check t <*> pure n
 
-typeOfTypeLit :: Loc TypeLiteral -> Type
-typeOfTypeLit (Loc IntTLit _) = IntT
-typeOfTypeLit (Loc FloatTLit _) = FloatT
-typeOfTypeLit (Loc BoolTLit _) = BoolT
-typeOfTypeLit (Loc StrTLit _) = StrT
-typeOfTypeLit (Loc NoneTLit _) = NoneT
+instance TypeCheckable (AST TypeExpr_) where
+    check (VarTExpr' var loc) = gets (Env.lookup var . _tcTypeEnv) >>= \case
+        Just t  -> return $ fromNode (Node (VarTExpr_ var) (loc, t))
+        Nothing -> raiseTC TCUndefinedTypeError ("Type " ++ show var ++ " is undefined") loc
 
-typeOfExpr :: Loc Expr -> TypeCheck Type
-typeOfExpr (Loc (VarExpr var) sp) = gets (Env.lookup var . _tcBindings) >>= \case
-    Just t  -> return t
-    Nothing -> raiseTC TCScopeError ("Name " ++ show var ++ " is undefined") sp
-typeOfExpr (Loc (BinOpExpr AddOp x y) sp) = (,) <$> typeOfExpr x <*> typeOfExpr y >>= \case
-    (AnyT, t) -> return t
-    (t, AnyT) -> return t
-    (IntT, IntT) -> return IntT
-    (IntT, FloatT) -> return FloatT
-    (FloatT, IntT) -> return FloatT
-    (FloatT, FloatT) -> return FloatT
-    (StrT, StrT) -> return StrT
-    (tx, ty) -> raiseTC TCMismatchError ("Cannot add value of type " ++ showType ty ++ " to value of type " ++ showType tx) sp
-typeOfExpr (Loc (BinOpExpr SubOp x y) sp) = (,) <$> typeOfExpr x <*> typeOfExpr y >>= \case
-    (AnyT, t) -> return t
-    (t, AnyT) -> return t
-    (IntT, IntT) -> return IntT
-    (IntT, FloatT) -> return FloatT
-    (FloatT, IntT) -> return FloatT
-    (FloatT, FloatT) -> return FloatT
-    (tx, ty) -> raiseTC TCMismatchError ("Cannot subtract value of type " ++ showType ty ++ " from value of type " ++ showType tx) sp
-typeOfExpr (Loc (BinOpExpr MulOp x y) sp) = (,) <$> typeOfExpr x <*> typeOfExpr y >>= \case
-    (AnyT, t) -> return t
-    (t, AnyT) -> return t
-    (IntT, IntT) -> return IntT
-    (IntT, FloatT) -> return FloatT
-    (FloatT, IntT) -> return FloatT
-    (FloatT, FloatT) -> return FloatT
-    (IntT, StrT) -> return StrT
-    (StrT, IntT) -> return StrT
-    (IntT, ListT t) -> return (ListT t)
-    (ListT t, IntT) -> return (ListT t)
-    (tx, ty) -> raiseTC TCMismatchError ("Cannot multiply value of type " ++ showType ty ++ " with value of type " ++ showType tx) sp
-typeOfExpr (Loc (BinOpExpr DivOp x y) sp) = (,) <$> typeOfExpr x <*> typeOfExpr y >>= \case
-    (AnyT, t) -> return t
-    (t, AnyT) -> return t
-    (IntT, IntT) -> return FloatT
-    (IntT, FloatT) -> return FloatT
-    (FloatT, IntT) -> return FloatT
-    (FloatT, FloatT) -> return FloatT
-    (tx, ty) -> raiseTC TCMismatchError ("Cannot divide value of type " ++ showType ty ++ " by value of type " ++ showType tx) sp
-typeOfExpr (Loc (BinOpExpr PowOp x y) sp) = (,) <$> typeOfExpr x <*> typeOfExpr y >>= \case
-    (AnyT, t) -> return t
-    (t, AnyT) -> return t
-    (IntT, IntT) -> return IntT
-    (IntT, FloatT) -> return FloatT
-    (FloatT, IntT) -> return FloatT
-    (FloatT, FloatT) -> return FloatT
-    (tx, ty) -> raiseTC TCMismatchError ("Cannot exponentiate value of type " ++ showType tx ++ " to value of type " ++ showType ty) sp
-typeOfExpr (Loc (BinOpExpr op x y) sp)
-    | op `elem` [GTOp, GEOp, LEOp, LTOp] = (,) <$> typeOfExpr x <*> typeOfExpr y >>= \case
-        (AnyT, t) -> return BoolT
-        (t, AnyT) -> return BoolT
-        (IntT, IntT) -> return BoolT
-        (IntT, FloatT) -> return BoolT
-        (FloatT, IntT) -> return BoolT
-        (FloatT, FloatT) -> return BoolT
-        (tx, ty) -> raiseTC TCMismatchError ("Cannot compare value of type " ++ showType tx ++ " to value of type " ++ showType ty) sp
-    | op `elem` [EQOp, NEQOp] = (,) <$> typeOfExpr x <*> typeOfExpr y >>= \case
-        (AnyT, t) -> return BoolT
-        (t, AnyT) -> return BoolT
-        (IntT, IntT) -> return BoolT
-        (IntT, FloatT) -> return BoolT
-        (FloatT, IntT) -> return BoolT
-        (FloatT, FloatT) -> return BoolT
-        (StrT, StrT) -> return BoolT
-        (ListT t, ListT t') ->
-            if t == t' then
-                return BoolT
-            else
-                raiseTC TCMismatchError "Cannot compare lists of different component types" sp
-        (TupleT ts, TupleT ts') -> do
-            sequence_ (zipWith (\ t t' -> intersect (Loc t sp) (Loc t' sp)) ts ts') <|> raiseTC TCMismatchError "Cannot compare tuples of different component types" sp
-            return BoolT
-        (NoneT, NoneT) -> return BoolT
-    | otherwise = raiseTC TCMismatchError "Cannot compare" sp
-typeOfExpr (Loc (UnOpExpr PosOp x) sp) = typeOfExpr x >>= \case
-    AnyT -> return AnyT
-    IntT -> return IntT
-    FloatT -> return FloatT
-    tx -> raiseTC TCMismatchError ("Cannot negate value of type " ++ showType tx) sp
-typeOfExpr (Loc (UnOpExpr NegOp x) sp) = typeOfExpr x >>= \case
-    AnyT -> return AnyT
-    IntT -> return IntT
-    FloatT -> return FloatT
-    tx -> raiseTC TCMismatchError ("Cannot get positive value of type " ++ showType tx) sp
-typeOfExpr (Loc (CallExpr f args) sp) = typeOfExpr f >>= \case
-    t@(FuncT ts r) -> do
-        ts' <- mapM (\ arg@(Loc _ sp) -> Loc <$> typeOfExpr arg <*> pure sp) args
-        sequence_ (zipWith (\ t t'@(Loc _ sp') -> intersect (Loc t sp') t') ts ts') <|> raiseTC TCMismatchError ("Couldn't call function of type " ++ showType t ++ " with arguments (" ++ intercalate ", " (map (showType . _locNode) ts') ++ ")") sp
-        return r
-    t -> raiseTC TCMismatchError ("Expected function, got " ++ show t) sp
-typeOfExpr (Loc (ListExpr xs) sp) = do
-    ts <- mapM (\ x@(Loc _ sp) -> Loc <$> typeOfExpr x <*> pure sp) xs
-    Loc t _ <- foldrM intersect (Loc AnyT sp) ts <|> raiseTC TCMismatchError "Expected list to be homogenous" sp
-    return (ListT t)
-typeOfExpr (Loc (TupleExpr xs) _) = TupleT <$> mapM typeOfExpr xs
-typeOfExpr (Loc (LitExpr lit) _) = return (typeOfLit lit)
+evalTypeLiteral :: TypeLiteral -> Type
+evalTypeLiteral IntTLit = IntT
+evalTypeLiteral FloatTLit = FloatT
+evalTypeLiteral BoolTLit = BoolT
+evalTypeLiteral StrTLit = StrT
+evalTypeLiteral NoneTLit = NoneT
 
-typeOfLit :: Loc Literal -> Type
-typeOfLit (Loc (IntLit _) _) = IntT
-typeOfLit (Loc (FloatLit _) _) = FloatT
-typeOfLit (Loc (BoolLit _) _) = BoolT
-typeOfLit (Loc (StrLit _) _) = StrT
-typeOfLit (Loc NoneLit _) = NoneT
+instance TypeCheckable (AST Expr_) where
+    check (VarExpr' var loc) = gets (Env.lookup var . _tcBindings) >>= \case
+        Just typ -> return . fromNode $ Node (VarExpr_ var) (loc, typ)
+        Nothing  -> raiseTC TCScopeError ("Name " ++ show var ++ " is undefined") loc
+    check (BinOpExpr' AddOp x y loc) = (,) <$> checkEval x <*> checkEval y >>= \case
+        ((cx, AnyT), (cy, t))        -> return . fromNode $ Node (BinOpExpr_ AddOp cx cy) (loc, t)
+        ((cx, t), (cy, AnyT))        -> return . fromNode $ Node (BinOpExpr_ AddOp cx cy) (loc, t)
+        ((cx, IntT), (cy, IntT))     -> return . fromNode $ Node (BinOpExpr_ AddOp cx cy) (loc, IntT)
+        ((cx, IntT), (cy, FloatT))   -> return . fromNode $ Node (BinOpExpr_ AddOp cx cy) (loc, FloatT)
+        ((cx, FloatT), (cy, IntT))   -> return . fromNode $ Node (BinOpExpr_ AddOp cx cy) (loc, FloatT)
+        ((cx, FloatT), (cy, FloatT)) -> return . fromNode $ Node (BinOpExpr_ AddOp cx cy) (loc, FloatT)
+        ((cx, StrT), (cy, StrT))     -> return . fromNode $ Node (BinOpExpr_ AddOp cx cy) (loc, StrT)
+        ((cx, tx), (cy, ty))         -> raiseTC TCMismatchError ("Cannot add value of type " ++ showType ty ++ " to value of type " ++ showType tx) loc
+    check (BinOpExpr' SubOp x y loc) = (,) <$> checkEval x <*> checkEval y >>= \case
+        ((cx, AnyT), (cy, t))        -> return . fromNode $ Node (BinOpExpr_ SubOp cx cy) (loc, t)
+        ((cx, t), (cy, AnyT))        -> return . fromNode $ Node (BinOpExpr_ SubOp cx cy) (loc, t)
+        ((cx, IntT), (cy, IntT))     -> return . fromNode $ Node (BinOpExpr_ SubOp cx cy) (loc, IntT)
+        ((cx, IntT), (cy, FloatT))   -> return . fromNode $ Node (BinOpExpr_ SubOp cx cy) (loc, FloatT)
+        ((cx, FloatT), (cy, IntT))   -> return . fromNode $ Node (BinOpExpr_ SubOp cx cy) (loc, FloatT)
+        ((cx, FloatT), (cy, FloatT)) -> return . fromNode $ Node (BinOpExpr_ SubOp cx cy) (loc, FloatT)
+        ((cx, tx), (cy, ty))         -> raiseTC TCMismatchError ("Cannot subtract value of type " ++ showType ty ++ " from value of type " ++ showType tx) loc
+    check (BinOpExpr' MulOp x y loc) = (,) <$> checkEval x <*> checkEval y >>= \case
+        ((cx, AnyT), (cy, t))        -> return . fromNode $ Node (BinOpExpr_ MulOp cx cy) (loc, t)
+        ((cx, t), (cy, AnyT))        -> return . fromNode $ Node (BinOpExpr_ MulOp cx cy) (loc, t)
+        ((cx, IntT), (cy, IntT))     -> return . fromNode $ Node (BinOpExpr_ MulOp cx cy) (loc, IntT)
+        ((cx, IntT), (cy, FloatT))   -> return . fromNode $ Node (BinOpExpr_ MulOp cx cy) (loc, FloatT)
+        ((cx, FloatT), (cy, IntT))   -> return . fromNode $ Node (BinOpExpr_ MulOp cx cy) (loc, FloatT)
+        ((cx, FloatT), (cy, FloatT)) -> return . fromNode $ Node (BinOpExpr_ MulOp cx cy) (loc, FloatT)
+        ((cx, IntT), (cy, StrT))     -> return . fromNode $ Node (BinOpExpr_ MulOp cx cy) (loc, StrT)
+        ((cx, StrT), (cy, IntT))     -> return . fromNode $ Node (BinOpExpr_ MulOp cx cy) (loc, StrT)
+        ((cx, IntT), (cy, ListT t))  -> return . fromNode $ Node (BinOpExpr_ MulOp cx cy) (loc, ListT t)
+        ((cx, ListT t), (cy, IntT))  -> return . fromNode $ Node (BinOpExpr_ MulOp cx cy) (loc, ListT t)
+        ((cx, tx), (cy, ty))         -> raiseTC TCMismatchError ("Cannot multiply value of type " ++ showType ty ++ " with value of type " ++ showType tx) loc
+    check (BinOpExpr' DivOp x y loc) = (,) <$> checkEval x <*> checkEval y >>= \case
+        ((cx, AnyT), (cy, t))        -> return . fromNode $ Node (BinOpExpr_ DivOp cx cy) (loc, t)
+        ((cx, t), (cy, AnyT))        -> return . fromNode $ Node (BinOpExpr_ DivOp cx cy) (loc, t)
+        ((cx, IntT), (cy, IntT))     -> return . fromNode $ Node (BinOpExpr_ DivOp cx cy) (loc, FloatT)
+        ((cx, IntT), (cy, FloatT))   -> return . fromNode $ Node (BinOpExpr_ DivOp cx cy) (loc, FloatT)
+        ((cx, FloatT), (cy, IntT))   -> return . fromNode $ Node (BinOpExpr_ DivOp cx cy) (loc, FloatT)
+        ((cx, FloatT), (cy, FloatT)) -> return . fromNode $ Node (BinOpExpr_ DivOp cx cy) (loc, FloatT)
+        ((cx, tx), (cy, ty))         -> raiseTC TCMismatchError ("Cannot divide value of type " ++ showType ty ++ " by value of type " ++ showType tx) loc
+    check (BinOpExpr' PowOp x y loc) = (,) <$> checkEval x <*> checkEval y >>= \case
+        ((cx, AnyT), (cy, t))        -> return . fromNode $ Node (BinOpExpr_ PowOp cx cy) (loc, t)
+        ((cx, t), (cy, AnyT))        -> return . fromNode $ Node (BinOpExpr_ PowOp cx cy) (loc, t)
+        ((cx, IntT), (cy, IntT))     -> return . fromNode $ Node (BinOpExpr_ PowOp cx cy) (loc, FloatT)
+        ((cx, IntT), (cy, FloatT))   -> return . fromNode $ Node (BinOpExpr_ PowOp cx cy) (loc, FloatT)
+        ((cx, FloatT), (cy, IntT))   -> return . fromNode $ Node (BinOpExpr_ PowOp cx cy) (loc, FloatT)
+        ((cx, FloatT), (cy, FloatT)) -> return . fromNode $ Node (BinOpExpr_ PowOp cx cy) (loc, FloatT)
+        ((cx, tx), (cy, ty))         -> raiseTC TCMismatchError ("Cannot exponentiate value of type " ++ showType tx ++ " to value of type " ++ showType ty) loc
+    check (BinOpExpr' op x y loc)
+        | op `elem` [GTOp, GEOp, LEOp, LTOp] = (,) <$> checkEval x <*> checkEval y >>= \case
+            ((cx, AnyT), (cy, t))        -> return . fromNode $ Node (BinOpExpr_ op cx cy) (loc, BoolT)
+            ((cx, t), (cy, AnyT))        -> return . fromNode $ Node (BinOpExpr_ op cx cy) (loc, BoolT)
+            ((cx, IntT), (cy, IntT))     -> return . fromNode $ Node (BinOpExpr_ op cx cy) (loc, BoolT)
+            ((cx, IntT), (cy, FloatT))   -> return . fromNode $ Node (BinOpExpr_ op cx cy) (loc, BoolT)
+            ((cx, FloatT), (cy, IntT))   -> return . fromNode $ Node (BinOpExpr_ op cx cy) (loc, BoolT)
+            ((cx, FloatT), (cy, FloatT)) -> return . fromNode $ Node (BinOpExpr_ op cx cy) (loc, BoolT)
+            ((cx, tx), (cy, ty))         -> raiseTC TCMismatchError ("Cannot compare value of type " ++ showType tx ++ " to value of type " ++ showType ty) loc
+        | op `elem` [EQOp, NEQOp] = (,) <$> checkEval x <*> checkEval y >>= \case
+            ((cx, AnyT), (cy, t))        -> return . fromNode $ Node (BinOpExpr_ op cx cy) (loc, BoolT)
+            ((cx, t), (cy, AnyT))        -> return . fromNode $ Node (BinOpExpr_ op cx cy) (loc, BoolT)
+            ((cx, IntT), (cy, IntT))     -> return . fromNode $ Node (BinOpExpr_ op cx cy) (loc, BoolT)
+            ((cx, IntT), (cy, FloatT))   -> return . fromNode $ Node (BinOpExpr_ op cx cy) (loc, BoolT)
+            ((cx, FloatT), (cy, IntT))   -> return . fromNode $ Node (BinOpExpr_ op cx cy) (loc, BoolT)
+            ((cx, FloatT), (cy, FloatT)) -> return . fromNode $ Node (BinOpExpr_ op cx cy) (loc, BoolT)
+            ((cx, StrT), (cy, StrT))     -> return . fromNode $ Node (BinOpExpr_ op cx cy) (loc, BoolT)
+            ((cx, ListT t), (cy, ListT t')) ->
+                if t == t' then
+                    return . fromNode $ Node (BinOpExpr_ op cx cy) (loc, BoolT)
+                else
+                    raiseTC TCMismatchError "Cannot compare lists of different component types" loc
+            ((cx, TupleT ts), (cy, TupleT ts')) -> do
+                sequence_ (zipWith intersect ts ts') <|> raiseTC TCMismatchError "Cannot compare tuples of different component types" loc
+                return . fromNode $ Node (BinOpExpr_ op cx cy) (loc, BoolT)
+            ((cx, NoneT), (cy, NoneT)) -> return . fromNode $ Node (BinOpExpr_ op cx cy) (loc, BoolT)
+        | otherwise = raiseTC TCMismatchError "Cannot compare" loc
+    check (UnOpExpr' PosOp x loc) = checkEval x >>= \case
+        (cx, AnyT)   -> return . fromNode $ Node (UnOpExpr_ PosOp cx) (loc, AnyT)
+        (cx, IntT)   -> return . fromNode $ Node (UnOpExpr_ PosOp cx) (loc, IntT)
+        (cx, FloatT) -> return . fromNode $ Node (UnOpExpr_ PosOp cx) (loc, FloatT)
+        (cx, tx)     -> raiseTC TCMismatchError ("Cannot posate value of type " ++ showType tx) loc
+    check (UnOpExpr' NegOp x loc) = checkEval x >>= \case
+        (cx, AnyT)   -> return . fromNode $ Node (UnOpExpr_ NegOp cx) (loc, AnyT)
+        (cx, IntT)   -> return . fromNode $ Node (UnOpExpr_ NegOp cx) (loc, IntT)
+        (cx, FloatT) -> return . fromNode $ Node (UnOpExpr_ NegOp cx) (loc, FloatT)
+        (cx, tx)     -> raiseTC TCMismatchError ("Cannot negate value of type " ++ showType tx) loc
+    check (CallExpr' f args loc) = checkEval f >>= \case
+        (cf, t@(FuncT ts r)) -> do
+            (cargs, ts') <- unzip <$> mapM checkEval args
+            sequence_ (zipWith intersect ts ts') <|> raiseTC TCMismatchError ("Couldn't call function of type " ++ showType t ++ " with arguments (" ++ intercalate ", " (map showType ts') ++ ")") loc
+            return . fromNode $ Node (CallExpr_ cf cargs) (loc, r)
+        (cf, t) -> raiseTC TCMismatchError ("Expected function, got " ++ show t) loc
+    check (ListExpr' xs loc) = do
+        (cxs, ts) <- unzip <$> mapM checkEval xs
+        t <- foldrM intersect AnyT ts <|> raiseTC TCMismatchError "Expected list to be homogenous" loc
+        return . fromNode $ Node (ListExpr_ cxs) (loc, ListT t)
+    check (TupleExpr' xs loc) = do
+        (cxs, ts) <- unzip <$> mapM checkEval xs
+        return . fromNode $ Node (TupleExpr_ cxs) (loc, TupleT ts)
+    check (LitExpr' lit loc) = return . fromNode $ Node (LitExpr_ lit) (loc, evalLiteral lit)
+
+evalLiteral :: Literal -> Type
+evalLiteral (IntLit _) = IntT
+evalLiteral (FloatLit _) = FloatT
+evalLiteral (BoolLit _) = BoolT
+evalLiteral (StrLit _) = StrT
+evalLiteral NoneLit = NoneT
