@@ -94,6 +94,17 @@ instance TypeCheckable (AST TypeExpr_) where
     check (VarTExpr' var loc) = gets (Env.lookup var . _tcTypeEnv) >>= \case
         Just t  -> return $ fromNode (Node (VarTExpr_ var) (loc, t))
         Nothing -> raiseTC TCUndefinedTypeError ("Type " ++ show var ++ " is undefined") loc
+    check (ListTExpr' t loc) = do
+        (ct, t') <- checkEval t
+        return $ fromNode (Node (ListTExpr_ ct) (loc, ListT t'))
+    check (TupleTExpr' ts loc) = do
+        (cts, ts') <- unzip <$> mapM checkEval ts
+        return . fromNode $ Node (TupleTExpr_ cts) (loc, TupleT ts')
+    check (FnTExpr' ps ret loc) = do
+        (cps, ps') <- unzip <$> mapM checkEval ps
+        (cret, ret') <- checkEval ret
+        return . fromNode $ Node (FnTExpr_ cps cret) (loc, FuncT ps' ret')
+    check (LitTExpr' lit loc) = return . fromNode $ Node (LitTExpr_ lit) (loc, evalTypeLiteral lit)
 
 evalTypeLiteral :: TypeLiteral -> Type
 evalTypeLiteral IntTLit = IntT

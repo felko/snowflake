@@ -117,8 +117,7 @@ putChunk (ContextChunk s) = setSGR [SetUnderlining NoUnderline] >> putStr s
 putChunk (ErrorChunk s) = setSGR [SetUnderlining SingleUnderline] >> putStr s
 
 data Chunk = ContextChunk String | ErrorChunk String deriving Show
-type ChunkLine   = [Chunk]
-type ErrorOutput = [ChunkLine]
+type ErrorOutput = [Chunk]
 
 inLoc :: (Line, Column) -> Loc -> Bool
 _ `inLoc` VoidLoc = False
@@ -129,29 +128,49 @@ _ `inLoc` VoidLoc = False
     | i == sourceLine stop  = j <= sourceColumn stop
     | otherwise = False
 
+-- splitSource :: String -> Line -> Loc -> ErrorOutput
+-- splitSource src offset (Loc f l)
+--     | sourceLine f == sourceLine l = [ beforeOffset
+--                                      , [ErrorChunk $ map ((srcLines !! (sourceLine f - 1)) !!) [sourceColumn f-1..sourceColumn l-1]]
+--                                      , afterOffset ]
+--     | otherwise = let (before, startLine) = splitAt (sourceColumn f) (srcLines !! sourceLine f)
+--                       bodyLines = map (return . ErrorChunk . (srcLines !!)) [sourceLine f+1..sourceLine l-1]
+--                       (stopLine, after) = splitAt (sourceColumn l) (srcLines !! sourceLine l)
+--                   in [ beforeOffset
+--                      , [ContextChunk before, ErrorChunk startLine]
+--                      ] ++ bodyLines ++
+--                      [ [ErrorChunk stopLine, ContextChunk after]
+--                      ,  afterOffset ]
+--     where lineCount = length (lines src)
+--           srcLines = lines src
+--           startLineIdx = if sourceLine f - offset > 0 then sourceLine f - offset else 1
+--           stopLineIdx  = if sourceLine l + offset <= lineCount then sourceLine l + offset else lineCount
+--           beforeOffset = map (ContextChunk . (srcLines !!)) [startLineIdx..sourceLine f-1]
+--           afterOffset = map (ContextChunk . (srcLines !!)) [sourceLine l+1..stopLineIdx]
+
+sliceLoc :: String -> Loc -> String
+sliceLoc src VoidLoc = ""
+sliceLoc src (Loc f l)
+    | f > l = ""
+    | sourceLine f == sourceLine l = let line = srcLines !! (sourceLine f - 1)
+                                     in drop (sourceColumn f - 1) $ take (sourceColumn l) line
+    | f < l = let line = srcLines !! (sourceLine f - 1)
+                  nextLoc = Loc (setSourceColumn (incSourceLine f 1) 0) l
+              in drop (sourceColumn f - 1) line ++ "\n" ++ sliceLoc src nextLoc
+    where srcLines = lines src
+
 splitSource :: String -> Line -> Loc -> ErrorOutput
-splitSource src offset (Loc f l)
-    | sourceLine f == sourceLine l = [ beforeOffset
-                                     , [ErrorChunk $ map ((srcLines !! sourceLine f) !!) [sourceColumn f..sourceColumn l]]
-                                     , afterOffset ]
-    | otherwise = let (before, startLine) = splitAt (sourceColumn f) (srcLines !! sourceLine f)
-                      bodyLines = map (return . ErrorChunk . (srcLines !!)) [sourceLine f+1..sourceLine l-1]
-                      (stopLine, after) = splitAt (sourceColumn l) (srcLines !! sourceLine l)
-                  in [ beforeOffset
-                     , [ContextChunk before, ErrorChunk startLine]
-                     ] ++ bodyLines ++
-                     [ [ErrorChunk stopLine, ContextChunk after]
-                     ,  afterOffset ]
+splitSource src offset loc@(Loc f l) = [ ContextChunk (sliceLoc src offsetToChunk)
+                                       , ErrorChunk (sliceLoc src (Loc f (incSourceColumn l (-1))))
+                                       , ContextChunk (sliceLoc src chunkToOffset) ]
     where lineCount = length (lines src)
-          srcLines = lines src
-          startLineIdx = if sourceLine f - offset > 0 then sourceLine f - offset else 1
-          stopLineIdx  = if sourceLine l + offset <= lineCount then sourceLine l + offset else lineCount
-          beforeOffset = map (ContextChunk . (srcLines !!)) [startLineIdx..sourceLine f-1]
-          afterOffset = map (ContextChunk . (srcLines !!)) [sourceLine l+1..stopLineIdx]
+          startLine = if sourceLine f - offset > 0 then sourceLine f - offset else 1
+          stopLine  = if sourceLine l + offset <= lineCount then sourceLine l + offset else lineCount
+          offsetToChunk = Loc (setSourceColumn (setSourceLine f startLine) 0) (incSourceColumn f (-1))
+          chunkToOffset = Loc l (setSourceColumn (setSourceLine l (stopLine+1)) 0)
 
-
--- splitSource :: String -> Line -> [Loc] -> ErrorOutput
--- splitSource src offset locs = output
+-- splitSource' :: String -> Line -> [Loc] -> ErrorOutput
+-- splitSource' src offset locs = output
 --     where lineCount = length (lines src)
 --           startLine = if sourceLine f - offset > 0 then sourceLine f - offset else 1
 --           stopLine  = if sourceLine l + offset <= lineCount then sourceLine l + offset else lineCount
@@ -169,7 +188,7 @@ splitSource src offset (Loc f l)
 --               | otherwise          = ContextChunk (map (\ (_, _, c) -> c) g)
 
 printErrorSource :: ModuleInfo -> Line -> Loc -> IO ()
-printErrorSource (ModuleInfo src path) offset loc = mapM_ putChunk (concat $ splitSource src offset loc)
+printErrorSource (ModuleInfo src path) offset loc = mapM_ putChunk (splitSource src offset loc)
 
 printError :: ModuleInfo -> Line -> TypeCheckError -> IO ()
 printError modInfo@(ModuleInfo src path) offset (TypeCheckError typ msg loc@(Loc f l)) = do

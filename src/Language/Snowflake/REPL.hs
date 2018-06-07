@@ -49,7 +49,7 @@ incNodeLocLines node offset = nodeUpdate node incLocLines
 updateNodeLineNo :: IsNode n => n Loc -> REPL (n Loc)
 updateNodeLineNo node = do
     offset <- lift $ gets _replLine
-    return (incNodeLocLines node offset)
+    return (incNodeLocLines node 0)
 
 bindVar :: Name -> Type -> REPL ()
 bindVar name typ = lift $ replBindings %= Env.insert name typ
