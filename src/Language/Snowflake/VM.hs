@@ -163,7 +163,7 @@ runInstr (BUILD_TUPLE n) = pop n >>= append . TupleVal . reverse
 runInstr (BUILD_STRUCT n) = do
   structs <- gets _vmStructs
   case structs ^? ix (fromIntegral n) of
-      Just fields -> append =<< (StructVal . Map.fromList . zip fields <$> pop (genericLength fields))
+      Just fields -> append =<< (StructVal . Map.fromList . zip fields . reverse <$> pop (genericLength fields))
       Nothing     -> raise StructError "BUILD_STRUCT: struct prototype not found"
 
 runInstr (ITER n) = head <$> pop 1 >>= \case

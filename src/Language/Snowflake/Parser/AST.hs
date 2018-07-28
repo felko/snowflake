@@ -38,8 +38,8 @@ module Language.Snowflake.Parser.AST
   , terminal, terminalVoid, fromNode
   , pattern VarExpr', pattern AttrExpr', pattern BinOpExpr', pattern UnOpExpr', pattern CallExpr', pattern ListExpr', pattern TupleExpr', pattern LitExpr', pattern StructExpr'
   , pattern VarExpr, pattern AttrExpr, pattern BinOpExpr, pattern UnOpExpr, pattern CallExpr, pattern ListExpr, pattern TupleExpr, pattern LitExpr, pattern StructExpr
-  , pattern VarTExpr', pattern ListTExpr', pattern TupleTExpr', pattern FnTExpr', pattern LitTExpr', pattern StructTExpr'
-  , pattern VarTExpr, pattern ListTExpr, pattern TupleTExpr, pattern FnTExpr, pattern LitTExpr, pattern StructTExpr
+  , pattern VarTExpr', pattern GenericTExpr', pattern ListTExpr', pattern TupleTExpr', pattern FnTExpr', pattern LitTExpr', pattern StructTExpr'
+  , pattern VarTExpr, pattern GenericTExpr, pattern ListTExpr, pattern TupleTExpr, pattern FnTExpr, pattern LitTExpr, pattern StructTExpr
   ) where
 
 import Data.AST
@@ -242,6 +242,7 @@ instance {-# OVERLAPS #-} Show (Expr a) where
 
 data TypeExpr_ expr
     = VarTExpr_ Name
+    | GenericTExpr_ Name
     | ListTExpr_ expr
     | TupleTExpr_ [expr]
     | FnTExpr_  [expr] expr
@@ -252,8 +253,11 @@ data TypeExpr_ expr
 type TypeExpr a = AST TypeExpr_ a
 
 -- State patterns
-pattern VarTExpr' :: String -> a -> TypeExpr a
+pattern VarTExpr' :: Name -> a -> TypeExpr a
 pattern VarTExpr' v s <- s :< VarTExpr_ v
+
+pattern GenericTExpr' :: Name -> a -> TypeExpr a
+pattern GenericTExpr' n s <- s :< GenericTExpr_ n
 
 pattern ListTExpr' :: TypeExpr a -> a -> TypeExpr a
 pattern ListTExpr' x s <- s :< ListTExpr_ x
@@ -271,8 +275,11 @@ pattern StructTExpr' :: Map.Map Name (TypeExpr a) -> a -> TypeExpr a
 pattern StructTExpr' fields s <- s :< StructTExpr_ fields
 
 -- Pure patterns
-pattern VarTExpr :: String -> TypeExpr a
+pattern VarTExpr :: Name -> TypeExpr a
 pattern VarTExpr v <- VarTExpr' v _
+
+pattern GenericTExpr :: Name -> TypeExpr a
+pattern GenericTExpr n <- GenericTExpr' n _
 
 pattern ListTExpr :: TypeExpr a -> TypeExpr a
 pattern ListTExpr x <- ListTExpr' x _
@@ -383,7 +390,8 @@ showExpr (LitExpr l) = "Lit " ++ paren (show l)
 showExpr (StructExpr assocs) = "Struct " ++ paren (show assocs)
 
 showTypeExpr :: TypeExpr a -> String
-showTypeExpr (VarTExpr n) = "Var " ++ show n
+showTypeExpr (VarTExpr v) = "Var " ++ show v
+showTypeExpr (GenericTExpr n) = "Generic " ++ show n
 showTypeExpr (ListTExpr t) = "List " ++ brack (show t)
 showTypeExpr (TupleTExpr ts) = "Tuple " ++ paren (intercalate ", " (map show ts))
 showTypeExpr (FnTExpr ps r) = "Fn " ++ paren (intercalate ", " (map show ps)) ++ " " ++ show r
