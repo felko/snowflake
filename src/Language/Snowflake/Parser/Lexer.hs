@@ -12,10 +12,10 @@ language = emptyDef
     , commentEnd      = "*/"
     , commentLine     = "//"
     , nestedComments  = True
-    , identStart      = lower
+    , identStart      = letter
     , identLetter     = alphaNum
     , reservedNames   =
-          [ "fn", "return"
+          [ "fn", "type", "return"
           , "if", "else", "while", "for", "in"
           , "true", "false", "none"
           , "int", "float", "bool", "str"

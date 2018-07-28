@@ -7,7 +7,7 @@ module Language.Snowflake.VM.Types
     ( Scope, Env
     , Value(..)
     , VM
-    , VMState(..), vmStack, vmEnv, vmTypeEnv, vmConstants, vmSymbols, vmSegments, vmDepth, vmInstrs, vmInstrIndex, vmDebug, vmVersion
+    , VMState(..), vmStack, vmEnv, vmTypeEnv, vmConstants, vmSymbols, vmStructs, vmSegments, vmDepth, vmInstrs, vmInstrIndex, vmDebug, vmVersion
     , VMExceptionType(..)
     , VMException(..)
     , raise
@@ -41,6 +41,7 @@ data Value
     | StrVal String
     | ListVal [Value]
     | TupleVal [Value]
+    | StructVal (Map.Map Name Value)
     | FuncVal Word32
     | NoneVal
     | BuiltinVal ([Value] -> VM Value)
@@ -50,8 +51,10 @@ instance Show Value where
     show (FloatVal x) = show x
     show (BoolVal b) = show b
     show (StrVal s) = show s
-    show (ListVal l) = '[' : intercalate "," (map show l) ++ "]"
-    show (TupleVal t) = '(' : intercalate "," (map show t) ++ ")"
+    show (ListVal l) = '[' : intercalate ", " (map show l) ++ "]"
+    show (TupleVal t) = '(' : intercalate ", " (map show t) ++ ")"
+    show (StructVal s) = '{' : intercalate ", " (map showAssoc $ Map.assocs s) ++ "}"
+        where showAssoc (n, v) = n ++ " = " ++ show v
     show (FuncVal segIndex) = "<<function " ++ show segIndex ++ ">>"
     show NoneVal = "None"
     show (BuiltinVal _) = "<<builtin>>"
@@ -65,10 +68,12 @@ instance Show VMException where
 
 data VMExceptionType
     = TypeError
+    | StructError
     | IndexError
     | ValueError
     | StackError
     | ScopeError
+    | AttrError
     | SegmentError
     | ZeroDivisionError
     | NoEntry
@@ -83,6 +88,7 @@ data VMState = VMState
     , _vmTypeEnv    :: TypeEnv
     , _vmConstants  :: [Constant]
     , _vmSymbols    :: [Name]
+    , _vmStructs    :: [[Name]]
     , _vmSegments   :: [Segment]
     , _vmDepth      :: Int
     , _vmInstrs     :: [Instr]
@@ -99,15 +105,17 @@ showState VMState{..} =
         , "env:        " ++ show _vmEnv
         , "constants:  " ++ show _vmConstants
         , "symbols:    " ++ show _vmSymbols
+        , "structs:    " ++ show _vmStructs
         , "instrs:     "
         ] ++ map showInstr (zip [0..] _vmInstrs)
     where showInstr (i, instr)
               | i == _vmInstrIndex = "      > " ++ show i ++ (replicate (4 - length (show i)) ' ') ++ show instr
               | otherwise          = '\t' : show i ++ (replicate (4 - length (show i)) ' ') ++ show instr
-          showSeg (i, (Segment constants symbols instrs)) =
+          showSeg (i, (Segment constants symbols structs instrs)) =
               intercalate "\n" $ ['\t' : "segment " ++ show i] ++ map ("\t\t" ++)
                   [ "constants: " ++ show constants
                   , "symbols:   " ++ show symbols
+                  , "structs:   " ++ show structs
                   ] ++ map showInstr (zip [0..] instrs)
 
 raise :: VMExceptionType -> Message -> VM a

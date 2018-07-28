@@ -34,6 +34,7 @@ import Control.Monad.Except
 import Data.Function (on)
 import Data.Semigroup ((<>))
 import Data.List (intercalate, groupBy)
+import qualified Data.Map as Map
 
 import Text.Parsec.Pos
 import Debug.Trace
@@ -47,6 +48,7 @@ data Type
     | FuncT [Type] Type
     | ListT Type
     | TupleT [Type]
+    | StructT (Map.Map Name Type)
     | NoneT
     | AnyT
     deriving (Eq, Show)
@@ -59,6 +61,8 @@ showType StrT = "str"
 showType (FuncT ps r) = "fn(" ++ intercalate ", " (map showType ps) ++ ") -> " ++ showType r
 showType (ListT t) = "[" ++ showType t ++ "]"
 showType (TupleT ts) = "(" ++ intercalate ", " (map showType ts) ++ ")"
+showType (StructT fields) = "{" ++ intercalate ", " (map showField (Map.assocs fields)) ++ "}"
+    where showField (n, t) = show t ++ " " ++ n
 showType NoneT = "None"
 showType AnyT = "*"
 
@@ -74,11 +78,13 @@ makeLenses ''TypeCheckState
 
 data TypeCheckErrorType
     = TCScopeError
+    | TCAttrError
     | TCMismatchError
     | TCUndefinedTypeError
 
 instance Show TypeCheckErrorType where
     show TCScopeError = "Scope error"
+    show TCAttrError = "Attribute error"
     show TCMismatchError = "Mismatch error"
     show TCUndefinedTypeError = "Undefined type error"
 

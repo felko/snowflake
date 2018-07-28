@@ -11,6 +11,7 @@ module Language.Snowflake.VM
   , runVM
   , runCurrentInstr
   , runBytecode
+  , bytecodeToVMState
   ) where
 
 import Language.Snowflake.VM.Operators
@@ -48,8 +49,9 @@ showCurrentInstr :: VM ()
 showCurrentInstr = use vmDebug >>= \ dbg -> if not dbg then return () else do
   stack <- use vmStack
   constants <- use vmConstants
-  env <- use vmEnv
   symbols <- use vmSymbols
+  structs <- use vmStructs
+  env <- use vmEnv
   depth <- use vmDepth
   idx <- use vmInstrIndex
   instrs <- use vmInstrs
@@ -62,10 +64,11 @@ showCurrentInstr = use vmDebug >>= \ dbg -> if not dbg then return () else do
       putStr (replicate (4 - length (show idx)) ' ')
       putStr $ show (genericIndex instrs idx)
       case genericIndex instrs idx of
-          STORE       addr -> putStrLn (" (" ++ show (genericIndex symbols addr) ++ ")")
-          LOAD        addr -> putStrLn (" (" ++ show (genericIndex symbols addr) ++ ")")
-          LOAD_CONST  addr -> putStrLn (" (" ++ show (genericIndex constants addr) ++ ")")
-          _                -> putStrLn ""
+          STORE        addr -> putStrLn (" (" ++ show (genericIndex symbols addr) ++ ")")
+          LOAD         addr -> putStrLn (" (" ++ show (genericIndex symbols addr) ++ ")")
+          LOAD_CONST   addr -> putStrLn (" (" ++ show (genericIndex constants addr) ++ ")")
+          BUILD_STRUCT addr -> putStrLn (" (" ++ show (genericIndex structs addr) ++ ")")
+          _                 -> putStrLn ""
       putStr (showState state)
       hFlush stdout
 
@@ -73,13 +76,14 @@ pauseVM :: VM ()
 pauseVM = lift . lift $ getChar >> return ()
 
 applyArgs :: Segment -> [Value] -> VM Value
-applyArgs (Segment c s i) args = do
+applyArgs (Segment c s ss i) args = do
     st@VMState{..} <- get
     let locals = Map.fromList $ catMaybes [(, val) <$> (s ^? ix i) | (i, val) <- zip [0..] args]
         state = st { _vmStack      = []
                    , _vmEnv        = Env.newChild locals _vmEnv
-                   , _vmSymbols    = s
                    , _vmConstants  = c
+                   , _vmSymbols    = s
+                   , _vmStructs    = ss
                    , _vmDepth      = _vmDepth + 1
                    , _vmInstrs     = i
                    , _vmInstrIndex = 0 }
@@ -156,6 +160,12 @@ runInstr (BUILD_LIST n) = pop n >>= append . ListVal . reverse
 
 runInstr (BUILD_TUPLE n) = pop n >>= append . TupleVal . reverse
 
+runInstr (BUILD_STRUCT n) = do
+  structs <- gets _vmStructs
+  case structs ^? ix (fromIntegral n) of
+      Just fields -> append =<< (StructVal . Map.fromList . zip fields <$> pop (genericLength fields))
+      Nothing     -> raise StructError "BUILD_STRUCT: struct prototype not found"
+
 runInstr (ITER n) = head <$> pop 1 >>= \case
     ListVal [] -> runInstr (JUMP n)
     ListVal (next:rest) -> append (ListVal rest) >> append next
@@ -181,12 +191,19 @@ runInstr (LOAD_CONST n) = gets ((^? ix (fromIntegral n)) . _vmConstants) >>= \ca
       Just cst -> append (constantToValue cst)
       Nothing -> raise SegmentError "LOAD_CONST: constant not found"
 
+runInstr (LOAD_ATTR n) = do
+    [StructVal assocs] <- pop 1
+    (symbols, env) <- gets (_vmSymbols &&& _vmEnv)
+    case symbols ^? ix (fromIntegral n) of
+        Just sym -> append ((Map.!) assocs sym)
+        Nothing -> raise AttrError "LOAD_ATTR: attribute symbol not found"
+
 runInstr RETURN = do
     [val] <- pop 1
     raise (Returned val) ""
 
 runInstr IF = head <$> pop 1 >>= \case
-    BoolVal True -> vmInstrIndex += 1 >> runCurrentInstr
+    BoolVal True  -> vmInstrIndex += 1 >> runCurrentInstr
     BoolVal False -> vmInstrIndex += 1
     _ -> raise TypeError "IF: expected boolean"
 
@@ -202,17 +219,18 @@ runBytecode :: Bytecode -> Env -> TypeEnv -> Bool -> IO (Either VMException VMSt
 runBytecode bytecode env typeEnv debug = runExceptT (execStateT runVM (bytecodeToVMState bytecode env typeEnv debug))
 
 bytecodeToVMState :: Bytecode -> Env -> TypeEnv -> Bool -> VMState
-bytecodeToVMState (Bytecode segments (Segment c s i) _ version) env typeEnv debug = VMState
-    { _vmStack = []
-    , _vmEnv = env
-    , _vmTypeEnv = typeEnv
-    , _vmSymbols = s
-    , _vmConstants = c
-    , _vmSegments = segments
-    , _vmDepth = 0
-    , _vmInstrs = i
+bytecodeToVMState (Bytecode segments (Segment c s ss i) _ version) env typeEnv debug = VMState
+    { _vmStack      = []
+    , _vmEnv        = env
+    , _vmTypeEnv    = typeEnv
+    , _vmSymbols    = s
+    , _vmConstants  = c
+    , _vmStructs    = ss
+    , _vmSegments   = segments
+    , _vmDepth      = 0
+    , _vmInstrs     = i
     , _vmInstrIndex = 0
-    , _vmDebug = debug
-    , _vmVersion = version }
+    , _vmDebug      = debug
+    , _vmVersion    = version }
   -- where globals = Map.fromList $ catMaybes
   --         [ (name,) <$> Env.lookup name env | (i, name) <- zip [0..] s ]

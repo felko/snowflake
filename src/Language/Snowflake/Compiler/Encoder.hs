@@ -30,9 +30,10 @@ encodeTimestamp :: Encoder Word32
 encodeTimestamp = putWord32be
 
 encodeSegment :: Encoder Segment
-encodeSegment (Segment c s i) = do
+encodeSegment (Segment c s ss i) = do
     encodeConstantTable c
     encodeSymbolTable s
+    encodeStructTable ss
     encodeInstructions i
 
 encodeConstantTable :: Encoder [Constant]
@@ -44,6 +45,11 @@ encodeSymbolTable :: Encoder [Name]
 encodeSymbolTable s = do
     putWord32be (genericLength s)
     mapM_ encodeSymbol s
+
+encodeStructTable :: Encoder [[Name]]
+encodeStructTable ss = do
+    putWord32be (genericLength ss)
+    mapM_ encodeStruct ss
 
 encodeConstant :: Encoder Constant
 encodeConstant NoneConst         = putWord8 0x00
@@ -58,6 +64,14 @@ encodeConstant (FuncConst i)     = putWord8 0x05 >> putWord32be i
 encodeSymbol :: Encoder Name
 encodeSymbol sym = putWord32be (fromIntegral $ BS.length bsym) >> putLazyByteString bsym
     where bsym = packUTF8 sym
+
+encodeStruct :: Encoder [Name]
+encodeStruct fieldNames = do
+    putWord32be (genericLength fieldNames)
+    forM_ fieldNames $ \ fieldName -> do
+        let bFieldName = packUTF8 fieldName
+        putWord32be (fromIntegral $ BS.length bFieldName)
+        putLazyByteString bFieldName
 
 encodeInstructions :: Encoder [Instr]
 encodeInstructions is = putWord32be (genericLength is) >> mapM_ encodeInstr is
@@ -83,14 +97,16 @@ encodeInstr GE  = putWord32be 0x34
 encodeInstr GT  = putWord32be 0x35
 encodeInstr RETURN = putWord32be 0x02
 encodeInstr IF = putWord32be 0x03
-encodeInstr (CALL n)        = putWord32be 0x04 >> putWord32be n
-encodeInstr (BUILD_LIST n)  = putWord32be 0x05 >> putWord32be n
-encodeInstr (BUILD_TUPLE n) = putWord32be 0x06 >> putWord32be n
-encodeInstr (STORE n)       = putWord32be 0x07 >> putWord32be n
-encodeInstr (LOAD n)        = putWord32be 0x08 >> putWord32be n
-encodeInstr (LOAD_CONST n)  = putWord32be 0x09 >> putWord32be n
-encodeInstr (JUMP n)        = putWord32be 0x0A >> putInt32be n
-encodeInstr (ITER n)        = putWord32be 0x0B >> putInt32be n
+encodeInstr (CALL n)         = putWord32be 0x04 >> putWord32be n
+encodeInstr (BUILD_LIST n)   = putWord32be 0x40 >> putWord32be n
+encodeInstr (BUILD_TUPLE n)  = putWord32be 0x41 >> putWord32be n
+encodeInstr (BUILD_STRUCT n) = putWord32be 0x42 >> putWord32be n
+encodeInstr (STORE n)        = putWord32be 0x05 >> putWord32be n
+encodeInstr (LOAD n)         = putWord32be 0x50 >> putWord32be n
+encodeInstr (LOAD_CONST n)   = putWord32be 0x51 >> putWord32be n
+encodeInstr (LOAD_ATTR n)    = putWord32be 0x52 >> putWord32be n
+encodeInstr (JUMP n)         = putWord32be 0x06 >> putInt32be n
+encodeInstr (ITER n)         = putWord32be 0x07 >> putInt32be n
 
 encodeHeader :: Encoder (ByteString, Bytecode)
 encodeHeader (hash, (Bytecode _ _ ts v)) = do

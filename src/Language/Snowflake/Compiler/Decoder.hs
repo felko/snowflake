@@ -44,7 +44,7 @@ decodeTimestamp :: Decoder Word32
 decodeTimestamp = getWord32be
 
 decodeSegment :: Decoder Segment
-decodeSegment = Segment <$> decodeConstantTable <*> decodeSymbolTable <*> decodeInstructions
+decodeSegment = Segment <$> decodeConstantTable <*> decodeSymbolTable <*> decodeStructTable <*> decodeInstructions
 
 decodeConstantTable :: Decoder [Constant]
 decodeConstantTable = do
@@ -55,6 +55,11 @@ decodeSymbolTable :: Decoder [Name]
 decodeSymbolTable = do
     n <- fromIntegral <$> getWord32be
     replicateM n decodeSymbol
+
+decodeStructTable :: Decoder [[Name]]
+decodeStructTable = do
+    n <- fromIntegral <$> getWord32be
+    replicateM n decodeStruct
 
 decodeConstant :: Decoder Constant
 decodeConstant = getWord8 >>= \case
@@ -75,6 +80,11 @@ decodeSymbol :: Decoder Name
 decodeSymbol = do
     size <- fromIntegral <$> getWord32be
     unpackUTF8 <$> getLazyByteString size
+
+decodeStruct :: Decoder [Name]
+decodeStruct = do
+    size <- fromIntegral <$> getWord32be
+    replicateM size $ (fromIntegral <$> getWord32be) >>= fmap unpackUTF8 . getLazyByteString
 
 decodeInstructions :: Decoder [Instr]
 decodeInstructions = do
@@ -104,13 +114,15 @@ decodeInstr = getWord32be >>= \case
     0x02 -> return RETURN
     0x03 -> return IF
     0x04 -> CALL <$> getWord32be
-    0x05 -> BUILD_LIST <$> getWord32be
-    0x06 -> BUILD_TUPLE <$> getWord32be
-    0x07 -> STORE <$> getWord32be
-    0x08 -> LOAD <$> getWord32be
-    0x09 -> LOAD_CONST <$> getWord32be
-    0x0A -> JUMP <$> getInt32be
-    0x0B -> ITER <$> getInt32be
+    0x40 -> BUILD_LIST <$> getWord32be
+    0x41 -> BUILD_TUPLE <$> getWord32be
+    0x42 -> BUILD_STRUCT <$> getWord32be
+    0x05 -> STORE <$> getWord32be
+    0x50 -> LOAD <$> getWord32be
+    0x51 -> LOAD_CONST <$> getWord32be
+    0x52 -> LOAD_ATTR <$> getWord32be
+    0x06 -> JUMP <$> getInt32be
+    0x07 -> ITER <$> getInt32be
     b -> fail $ "Unable to decode instruction " ++ show b
 
 decodeHeader :: Decoder (Version, Word32, ByteString)

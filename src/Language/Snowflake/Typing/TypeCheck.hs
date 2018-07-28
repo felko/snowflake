@@ -17,6 +17,7 @@ import Language.Snowflake.Parser.AST
 import Language.Snowflake.VM.Types
 
 import qualified Data.ChainMap as Env
+import Data.AST
 
 import Prelude hiding (Ordering(..))
 
@@ -42,11 +43,15 @@ instance TypeCheckable (Decl Block) where
 
 instance TypeCheckable (Decl Instruction) where
     check (Decl (Node (DeclareInstr te v e) loc)) = do
-        (cte, t)  <- checkEval te
-        (ce, t') <- checkEval e
-        t'' <- intersect t t' <|> raiseTC TCMismatchError ("Couldn't declare value of expected type " ++ showType t ++ " with actual type " ++ showType t') loc
-        tcBindings %= Env.insert v t''
-        return . Decl $ Node (DeclareInstr cte v ce) (loc, NoneT)
+        b <- gets _tcBindings
+        if Env.member v b then
+            raiseTC TCScopeError ("Name " ++ show v ++ " was already declared") loc
+        else do
+            (cte, t)  <- checkEval te
+            (ce, t') <- checkEval e
+            t'' <- intersect t t' <|> raiseTC TCMismatchError ("Couldn't declare value of expected type " ++ showType t ++ " with actual type " ++ showType t') loc
+            tcBindings %= Env.insert v t''
+            return . Decl $ Node (DeclareInstr cte v ce) (loc, NoneT)
     check (Decl (Node (AssignInstr v e) loc)) = do
         (_, t) <- checkEval (fromNode (Node (VarExpr_ v) loc))
         (ce, t') <- checkEval e
@@ -62,13 +67,13 @@ instance TypeCheckable (Decl Instruction) where
         return . Decl $ Node (ExprInstr ce) (loc, NoneT)
     check (Decl (Node (CondInstr cond tr fl) loc)) = do
         (ccond, condT) <- checkEval cond
-        intersect condT BoolT <|> raiseTC TCMismatchError ("Expected value of type bool, got " ++ showType condT) (astNodeData cond)
+        intersect condT BoolT <|> raiseTC TCMismatchError ("Expected value of type bool, got " ++ showType condT) (extract cond)
         ctr <- check tr
         cfl <- check fl
         return . Decl $ Node (CondInstr ccond ctr cfl) (loc, NoneT)
     check (Decl (Node (WhileInstr cond loop) loc)) = do
         (ccond, condT) <- checkEval cond
-        intersect condT BoolT <|> raiseTC TCMismatchError ("Expected value of type bool, got " ++ showType condT) (astNodeData cond)
+        intersect condT BoolT <|> raiseTC TCMismatchError ("Expected value of type bool, got " ++ showType condT) (extract cond)
         cloop <- check loop
         return . Decl $ Node (WhileInstr ccond cloop) (loc, NoneT)
     check (Decl (Node (ForInstr var iter loop) loc)) = checkEval iter >>= \case
@@ -76,7 +81,7 @@ instance TypeCheckable (Decl Instruction) where
             tcs <- get
             cloop <- sandboxCheck loop $ tcs & tcBindings %~ Env.newChild (Map.singleton var t)
             return . Decl $ Node (ForInstr var citer cloop) (loc, NoneT)
-        (citer, t) -> raiseTC TCMismatchError ("Expected iterable, got " ++ showType t) (astNodeData iter)
+        (citer, t) -> raiseTC TCMismatchError ("Expected iterable, got " ++ showType t) (extract iter)
     check (Decl (Node (FnInstr (FnDecl name params ret body)) loc)) = do
         tcs <- get
         (cret, tret) <- checkEval ret
@@ -86,11 +91,15 @@ instance TypeCheckable (Decl Instruction) where
                                          & tcExpected .~ tret
         tcBindings %= Env.insert name (FuncT pt tret)
         return . Decl $ Node (FnInstr (FnDecl name cparams cret cbody)) (loc, NoneT)
+    check (Decl (Node (TypeInstr (TypeDecl name fields)) loc)) = do
+        (cfields, tfields) <- unzipMap <$> mapM checkEval fields
+        tcTypeEnv %= Env.insert name (StructT tfields)
+        return . Decl $ Node (TypeInstr (TypeDecl name cfields)) (loc, NoneT)
 
 instance TypeCheckable Param where
     check (Param t n) = Param <$> check t <*> pure n
 
-instance TypeCheckable (AST TypeExpr_) where
+instance TypeCheckable (Cofree TypeExpr_) where
     check (VarTExpr' var loc) = gets (Env.lookup var . _tcTypeEnv) >>= \case
         Just t  -> return $ fromNode (Node (VarTExpr_ var) (loc, t))
         Nothing -> raiseTC TCUndefinedTypeError ("Type " ++ show var ++ " is undefined") loc
@@ -105,6 +114,12 @@ instance TypeCheckable (AST TypeExpr_) where
         (cret, ret') <- checkEval ret
         return . fromNode $ Node (FnTExpr_ cps cret) (loc, FuncT ps' ret')
     check (LitTExpr' lit loc) = return . fromNode $ Node (LitTExpr_ lit) (loc, evalTypeLiteral lit)
+    check (StructTExpr' fields loc) = do
+        (cfields, tfields) <- unzipMap <$> mapM checkEval fields
+        return . fromNode $ Node (StructTExpr_ cfields) (loc, StructT tfields)
+
+unzipMap :: Ord k => Map.Map k (v, v') -> (Map.Map k v, Map.Map k v')
+unzipMap m = (fst <$> m, snd <$> m)
 
 evalTypeLiteral :: TypeLiteral -> Type
 evalTypeLiteral IntTLit = IntT
@@ -113,10 +128,17 @@ evalTypeLiteral BoolTLit = BoolT
 evalTypeLiteral StrTLit = StrT
 evalTypeLiteral NoneTLit = NoneT
 
-instance TypeCheckable (AST Expr_) where
+instance TypeCheckable (Cofree Expr_) where
     check (VarExpr' var loc) = gets (Env.lookup var . _tcBindings) >>= \case
         Just typ -> return . fromNode $ Node (VarExpr_ var) (loc, typ)
         Nothing  -> raiseTC TCScopeError ("Name " ++ show var ++ " is undefined") loc
+    check (AttrExpr' owner attr loc) = checkEval owner >>= \case
+        (cowner, StructT fields) ->
+            if Map.member attr fields then
+                return . fromNode $ Node (AttrExpr_ cowner attr) (loc, (Map.!) fields attr)
+            else
+                raiseTC TCAttrError (show cowner ++ " has no attribute " ++ show attr) loc
+        (_, t) -> raiseTC TCMismatchError ("Expected struct, got " ++ show t) loc
     check (BinOpExpr' AddOp x y loc) = (,) <$> checkEval x <*> checkEval y >>= \case
         ((cx, AnyT), (cy, t))        -> return . fromNode $ Node (BinOpExpr_ AddOp cx cy) (loc, t)
         ((cx, t), (cy, AnyT))        -> return . fromNode $ Node (BinOpExpr_ AddOp cx cy) (loc, t)
@@ -213,6 +235,9 @@ instance TypeCheckable (AST Expr_) where
         (cxs, ts) <- unzip <$> mapM checkEval xs
         return . fromNode $ Node (TupleExpr_ cxs) (loc, TupleT ts)
     check (LitExpr' lit loc) = return . fromNode $ Node (LitExpr_ lit) (loc, evalLiteral lit)
+    check (StructExpr' assocs loc) = do
+        (cassocs, fields) <- unzipMap <$> mapM checkEval assocs
+        return . fromNode $ Node (StructExpr_ cassocs) (loc, StructT fields)
 
 evalLiteral :: Literal -> Type
 evalLiteral (IntLit _) = IntT

@@ -63,9 +63,10 @@ runREPLInput (Instr (instr', src)) = do
     case runTypeCheck instr modInfo bindings typeEnv of
         Right (cinstr, tc) -> do
             VMState{..} <- lift (lift get)
-            let bc = Bytecode _vmSegments (Segment _vmConstants _vmSymbols []) 0 version
+            let bc = Bytecode _vmSegments (Segment _vmConstants _vmSymbols _vmStructs []) 0 version
                 Bytecode ss seg' _ _ = execState (compileInstr cinstr) bc
             lift . lift $ applySegment seg'
+            lift . lift $ vmSegments .= ss
             lift $ replBindings .= _tcBindings tc
         Left errs -> printTypeCheckErrors modInfo errs
 runREPLInput (Expr (expr, src)) = do
@@ -75,23 +76,26 @@ runREPLInput (Expr (expr, src)) = do
     case runTypeCheck expr modInfo bindings typeEnv of
         Right (cexpr, tc) -> do
             VMState{..} <- lift (lift get)
-            let seg  = Segment _vmConstants _vmSymbols []
-                seg' = execState (compileExpr cexpr) seg
-            val <- lift . lift $ applySegment seg' >> gets (head . view vmStack)
+            let seg  = Segment _vmConstants _vmSymbols _vmStructs []
+                Segment c s ss i = execState (compileExpr cexpr) seg
+                seg' = Segment c s ss (i ++ [RETURN])
+            val <- lift . lift $ applySegment seg'
             outputStrLn (show val)
         Left errs -> printTypeCheckErrors modInfo errs
 runREPLInput (Command c) = runREPLCommand c
 runREPLInput NoInput = return ()
 
-applySegment :: Segment -> VM ()
-applySegment (Segment c s i) = do
+applySegment :: Segment -> VM Value
+applySegment (Segment c s ss i) = do
     vmConstants .= c
     vmSymbols .= s
+    vmStructs .= ss
     vmInstrs .= i
     vmInstrIndex .= 0
-    runVM
+    r <- runVM
     vmInstrs .= []
     vmInstrIndex .= 0
+    return r
 
 printTypeCheckErrors :: ModuleInfo -> [TypeCheckError] -> REPL ()
 printTypeCheckErrors modInfo errs = do
@@ -119,14 +123,15 @@ runREPLCommand (Load path) = do
               Right (cast, tc) -> do
                   let initCompilerState = Bytecode
                           { _bcSegments  = _vmSegments
-                          , _bcTopLevel  = Segment _vmConstants _vmSymbols []
+                          , _bcTopLevel  = Segment _vmConstants _vmSymbols _vmStructs []
                           , _bcTimestamp = 0
                           , _bcVersion   = _vmVersion }
-                  let Bytecode segments (Segment c s i) _ _ = execState (compileProgram cast) initCompilerState
+                  let Bytecode segments (Segment c s ss i) _ _ = execState (compileProgram cast) initCompilerState
                   let initState = st
                           { _vmStack      = []
                           , _vmConstants  = c
                           , _vmSymbols    = s
+                          , _vmStructs    = ss
                           , _vmSegments   = segments
                           , _vmDepth      = 0
                           , _vmInstrs     = i
@@ -173,6 +178,7 @@ defaultVMState debug = VMState
     , _vmTypeEnv    = Env.singleMap defaultTypeEnv
     , _vmConstants  = []
     , _vmSymbols    = []
+    , _vmStructs    = []
     , _vmSegments   = []
     , _vmDepth      = 0
     , _vmInstrs     = []

@@ -1,0 +1,11 @@
+fn fact(int n) -> int {
+    int f = 1;
+    int k = 1;
+    while (k <= n) {
+        f = f * k;
+        k = k + 1;
+    }
+    return f;
+}
+
+print(fact(15));

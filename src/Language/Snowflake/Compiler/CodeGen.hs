@@ -18,6 +18,7 @@ import Control.Monad.State
 import Control.Monad.Except
 import Control.Arrow ((&&&))
 
+import qualified Data.Map as Map
 import Data.Maybe (fromMaybe)
 import Data.Word
 import Data.List
@@ -72,6 +73,7 @@ newSegment seg = do
 defaultSegment = Segment
     { _segConstants = []
     , _segSymbols   = []
+    , _segStructs   = []
     , _segInstrs    = [] }
 
 execCompiler :: Compiler Bytecode a -> IO Bytecode
@@ -99,6 +101,9 @@ newConstant = newID segConstants
 
 newSymbol :: Name -> Compiler Segment Word32
 newSymbol = newID segSymbols
+
+newStruct :: [Name] -> Compiler Segment Word32
+newStruct = newID segStructs
 
 instantiateVariable :: Name -> Compiler Segment ()
 instantiateVariable var = elemIndex var <$> gets _segSymbols >>= \case
@@ -134,6 +139,10 @@ unOp op x = do
 
 compileExpr :: Expr (Loc, Type) -> Compiler Segment ()
 compileExpr (VarExpr name) = instantiateVariable name
+compileExpr (AttrExpr owner attr) = do
+    i <- newSymbol attr
+    compileExpr owner
+    addInstr $ LOAD_ATTR i
 compileExpr (LitExpr lit) = addInstr =<< (LOAD_CONST <$> newConstant (literalToConstant lit))
 compileExpr (BinOpExpr op a b) = binOp op a b
 compileExpr (UnOpExpr op x) = unOp op x
@@ -147,6 +156,10 @@ compileExpr (ListExpr lst) = do
 compileExpr (TupleExpr t) = do
     mapM_ compileExpr t
     addInstr $ BUILD_TUPLE (genericLength t)
+compileExpr (StructExpr assocs) = do
+    i <- newStruct (Map.keys assocs)
+    mapM_ compileExpr (Map.elems assocs)
+    addInstr $ BUILD_STRUCT i
 
 compileBlock :: Decl Block (Loc, Type) -> Compiler Bytecode ()
 compileBlock (Decl (Node (Block block) _)) = mapM_ compileInstr block
@@ -212,6 +225,7 @@ compileInstr (Decl (Node (FnInstr (FnDecl name params _ body)) _)) = do
         iConst  <- newConstant (FuncConst segIndex)
         addInstr $ LOAD_CONST iConst
         addInstr $ STORE iSymbol
+compileInstr (Decl (Node (TypeInstr (TypeDecl name fields)) loc)) = return ()
 
 compileProgram :: Program (Loc, Type) -> Compiler Bytecode ()
 compileProgram (Program instrs) = compileBlock instrs

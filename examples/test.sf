@@ -1,2 +1,13 @@
-(int, str) tuple = (3, "caca");
-print(tuple);
+type Position {
+    float x;
+    float y;
+}
+
+Position p = { x = 0.0, y = 0.0 };
+
+print(p);
+
+print(p.x);
+
+{ float a; float b; } x = { a = 0.0, b = 1.0 };
+print(x);

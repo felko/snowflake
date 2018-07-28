@@ -3,7 +3,7 @@
 module Language.Snowflake.Compiler.Types
   ( Instr(..)
   , Bytecode(..), bcSegments, bcTopLevel, bcTimestamp, bcVersion
-  , Segment(..), segConstants, segSymbols, segInstrs
+  , Segment(..), segConstants, segSymbols, segStructs, segInstrs
   , Constant(..)
   , Name
   , Message
@@ -41,14 +41,16 @@ data Instr
     | LT | LE | EQ | NEQ | GE | GT
     | RETURN
     | IF
-    | CALL        Word32
-    | BUILD_LIST  Word32
-    | BUILD_TUPLE Word32
-    | STORE       Word32
-    | LOAD        Word32
-    | LOAD_CONST  Word32
-    | JUMP        Int32
-    | ITER        Int32
+    | CALL         Word32
+    | BUILD_LIST   Word32
+    | BUILD_TUPLE  Word32
+    | BUILD_STRUCT Word32
+    | STORE        Word32
+    | LOAD         Word32
+    | LOAD_CONST   Word32
+    | LOAD_ATTR    Word32
+    | JUMP         Int32
+    | ITER         Int32
     deriving (Eq, Show)
 
 data Constant
@@ -71,6 +73,7 @@ instance Show Constant where
 data Segment = Segment
     { _segConstants :: [Constant]
     , _segSymbols   :: [Name]
+    , _segStructs   :: [[Name]]
     , _segInstrs    :: [Instr] }
     deriving (Eq, Show)
 makeLenses ''Segment
@@ -84,21 +87,23 @@ data Bytecode = Bytecode
 makeLenses ''Bytecode
 
 showBytecode :: Bytecode -> String
-showBytecode (Bytecode ss (Segment c s i) t v) = intercalate "\n" $
+showBytecode (Bytecode ss (Segment c s s' i) t v) = intercalate "\n" $
         [ "top level: "
         , "\tconstants: " ++ show c
         , "\tsymbols:   " ++ show s
         ] ++ map (('\t':) . showInstr) (zip [0..] i) ++
-        [ "segments: "
+        [ "\tstructs:   " ++ show s'
+        , "segments: "
         ] ++ map (('\t':) . showSeg) (zip [0..] ss) ++
         [ "version:   " ++ showVersion v
         , "timestamp: " ++ show t
         ]
     where showInstr (i, instr) = '\t' : show i ++ (replicate (4 - length (show i)) ' ') ++ show instr
-          showSeg (i, (Segment constants symbols instrs)) =
+          showSeg (i, (Segment constants symbols structs instrs)) =
               intercalate "\n" $ ["segment " ++ show i] ++ map ("\t\t" ++)
                   [ "constants: " ++ show constants
                   , "symbols:   " ++ show symbols
+                  , "structs:   " ++ show structs
                   ] ++ map (("\t\t" ++) . showInstr) (zip [0..] instrs)
 
 hashMD5 :: ByteString -> ByteString
@@ -112,13 +117,14 @@ unpackUTF8 :: ByteString -> String
 unpackUTF8 = UTF8.decode . BS.unpack
 
 prettyPrintCode :: Segment -> IO ()
-prettyPrintCode (Segment constants symbols instrs) =
+prettyPrintCode (Segment constants symbols structs instrs) =
     forM_ (zip [0..] instrs) $ \ (idx, instr) -> do
         putStr (show idx ++ " ")
         putStr $ replicate (4 - length (show idx)) ' ' ++ (show instr)
         case instr of
-            STORE      addr -> putStr (" (" ++ genericIndex symbols addr ++ ")")
-            LOAD       addr -> putStr (" (" ++ genericIndex symbols addr ++ ")")
-            LOAD_CONST addr -> putStr (" (" ++ show (genericIndex constants addr) ++ ")")
-            _               -> return ()
+            STORE        addr -> putStr (" (" ++ genericIndex symbols addr ++ ")")
+            LOAD         addr -> putStr (" (" ++ genericIndex symbols addr ++ ")")
+            LOAD_CONST   addr -> putStr (" (" ++ show (genericIndex constants addr) ++ ")")
+            BUILD_STRUCT addr -> putStr (" (" ++ show (genericIndex structs addr) ++ ")")
+            _                 -> return ()
         putStrLn ""
