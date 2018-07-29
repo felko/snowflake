@@ -26,11 +26,14 @@ module Language.Snowflake.Parser.AST
   , FnDecl(..)
   , TypeDecl(..)
   , Param(..)
+  , TypeParam(..)
   , Expr_(..)
   , Expr
   , TypeExpr_(..)
   , TypeExpr
   , TypeLiteral(..)
+  , KindExpr_(..)
+  , KindExpr
   , BinOp(..)
   , UnOp(..)
   , Literal(..)
@@ -38,12 +41,15 @@ module Language.Snowflake.Parser.AST
   , terminal, terminalVoid, fromNode
   , pattern VarExpr', pattern AttrExpr', pattern BinOpExpr', pattern UnOpExpr', pattern CallExpr', pattern ListExpr', pattern TupleExpr', pattern LitExpr', pattern StructExpr'
   , pattern VarExpr, pattern AttrExpr, pattern BinOpExpr, pattern UnOpExpr, pattern CallExpr, pattern ListExpr, pattern TupleExpr, pattern LitExpr, pattern StructExpr
-  , pattern VarTExpr', pattern GenericTExpr', pattern ListTExpr', pattern TupleTExpr', pattern FnTExpr', pattern LitTExpr', pattern StructTExpr'
-  , pattern VarTExpr, pattern GenericTExpr, pattern ListTExpr, pattern TupleTExpr, pattern FnTExpr, pattern LitTExpr, pattern StructTExpr
+  , pattern VarTExpr', pattern ListTExpr', pattern TupleTExpr', pattern FnTExpr', pattern LitTExpr', pattern StructTExpr'
+  , pattern VarTExpr, pattern ListTExpr, pattern TupleTExpr, pattern FnTExpr, pattern LitTExpr, pattern StructTExpr
+  , pattern TypeKExpr'
+  , pattern TypeKExpr
   ) where
 
 import Data.AST
 
+import Data.Bifunctor
 import Data.Functor.Foldable
 import Data.Functor.Compose
 import Data.Functor.Classes
@@ -80,9 +86,9 @@ class IsNode n where
 nodeUpdate :: IsNode n => n s -> (s -> s) -> n s
 nodeUpdate node f = nodeSet node (f (nodeData node))
 
-instance Functor f => IsNode (Cofree f) where
+instance Bifunctor f => IsNode (AST f) where
     nodeData = extract
-    nodeSet (_ :< t) s = s :< t
+    nodeSet (_ :> t) s = s :> t
 
 instance IsNode (Decl n) where
     nodeData (Decl (Node _ s)) = s
@@ -113,14 +119,14 @@ data Node a n = Node
 --     fmap f (AST (Fix (Compose (Node n s)))) = AST (Fix (Compose (Node n' (f s))))
 --         where n' = fmap (unAST . fmap f . AST) n
 
-terminal :: Functor n => (forall b. a -> n b) -> Node Loc a -> AST n Loc
+terminal :: Bifunctor n => (forall b. a -> n Loc b) -> Node Loc a -> AST n Loc
 terminal constr x = fromNode (constr <$> x)
 
-terminalVoid :: Functor n => (forall b. a -> n b) -> a -> AST n Loc
+terminalVoid :: Bifunctor n => (forall b. a -> n Loc b) -> a -> AST n Loc
 terminalVoid constr x = fromNode (Node (constr x) VoidLoc)
 
-fromNode :: Functor f => Node a (f (AST f a)) -> AST f a
-fromNode (Node n s) = s :< n --AST . Fix . Compose $ Node (fmap unAST n) s
+fromNode :: Bifunctor f => Node a (f a (AST f a)) -> AST f a
+fromNode (Node n s) = s :> n --AST . Fix . Compose $ Node (fmap unAST n) s
 
 data ModuleInfo = ModuleInfo
     { _modSource :: String
@@ -151,63 +157,99 @@ data Instruction a
     | FnInstr (FnDecl a)
     | TypeInstr (TypeDecl a)
 
-deriving instance Functor Instruction
+instance Functor Instruction where
+    fmap f (DeclareInstr t n v) = DeclareInstr (fmap f t) n (fmap f v)
+    fmap f (AssignInstr n v) = AssignInstr n (fmap f v)
+    fmap f (ReturnInstr v) = ReturnInstr (fmap f v)
+    fmap f (ExprInstr e) = ExprInstr (fmap f e)
+    fmap f (CondInstr c tr fl) = CondInstr (fmap f c) (fmap f tr) (fmap f fl)
+    fmap f (WhileInstr c l) = WhileInstr (fmap f c) (fmap f l)
+    fmap f (ForInstr n i l) = ForInstr n (fmap f i) (fmap f l)
+    fmap f (FnInstr d) = FnInstr (fmap f d)
+    fmap f (TypeInstr d) = TypeInstr (fmap f d)
 
-data FnDecl a = FnDecl Name [Param a] (TypeExpr a) (Decl Block a)
-    deriving Functor
+data FnDecl a = FnDecl Name [TypeParam Loc] [Param a] (TypeExpr a) (Decl Block a)
+
+instance Functor FnDecl where
+    fmap f (FnDecl n gs ps r b) = FnDecl n gs (fmap (fmap f) ps) (fmap f r) (fmap f b)
 
 data TypeDecl a = TypeDecl Name (Map.Map Name (TypeExpr a))
-    deriving Functor
+
+instance Functor TypeDecl where
+    fmap f (TypeDecl n fs) = TypeDecl n (fmap (fmap f) fs)
 
 data Param a = Param
     { _paramType :: TypeExpr a
     , _paramName :: Name }
-    deriving Functor
+
+instance Functor Param where
+    fmap f (Param t n) = Param (fmap f t) n
+
+data TypeParam a = TypeParam
+    { _typeParamKind :: KindExpr a
+    , _typeParamName :: Name }
+
+instance Functor TypeParam where
+    fmap f (TypeParam k n) = TypeParam (fmap f k) n
 
 instance Show (Param a) where
     show (Param t n) = "Param " ++ paren (show t) ++ " " ++ show n
 
-data Expr_ expr
+instance Show (TypeParam a) where
+    show (TypeParam k n) = "TypeParam " ++ paren (show k) ++ " " ++ show n
+
+data Expr_ a expr
     = VarExpr_ Name
     | AttrExpr_ expr Name
     | BinOpExpr_ BinOp expr expr
     | UnOpExpr_ UnOp expr
-    | CallExpr_ expr [expr]
+    | CallExpr_ expr [TypeExpr a] [expr]
     | ListExpr_ [expr]
     | TupleExpr_ [expr]
     | LitExpr_ Literal
     | StructExpr_ (Map.Map Name expr)
-    deriving (Functor, Foldable, Traversable)
+    --deriving (Functor, Foldable, Traversable)
+
+instance Bifunctor Expr_ where
+    bimap f g (VarExpr_ n) = VarExpr_ n
+    bimap f g (AttrExpr_ x a) = AttrExpr_ (g x) a
+    bimap f g (BinOpExpr_ op x y) = BinOpExpr_ op (g x) (g y)
+    bimap f g (UnOpExpr_ op x) = UnOpExpr_ op (g x)
+    bimap f g (CallExpr_ fx gs xs) = CallExpr_ (g fx) (fmap (fmap f) gs) (fmap g xs)
+    bimap f g (ListExpr_ xs) = ListExpr_ (fmap g xs)
+    bimap f g (TupleExpr_ xs) = TupleExpr_ (fmap g xs)
+    bimap f g (LitExpr_ lit) = LitExpr_ lit
+    bimap f g (StructExpr_ as) = StructExpr_ (fmap g as)
 
 type Expr a = AST Expr_ a
 
 -- State patterns
 pattern VarExpr' :: Name -> a -> Expr a
-pattern VarExpr' v s <- s :< VarExpr_ v
+pattern VarExpr' v s <- s :> VarExpr_ v
 
 pattern AttrExpr' :: Expr a -> Name -> a -> Expr a
-pattern AttrExpr' x a s <- s :< AttrExpr_ x a
+pattern AttrExpr' x a s <- s :> AttrExpr_ x a
 
 pattern BinOpExpr' :: BinOp -> Expr a -> Expr a -> a -> Expr a
-pattern BinOpExpr' op x y s <- s :< BinOpExpr_ op x y
+pattern BinOpExpr' op x y s <- s :> BinOpExpr_ op x y
 
 pattern UnOpExpr' :: UnOp -> Expr a -> a -> Expr a
-pattern UnOpExpr' op x s <- s :< UnOpExpr_ op x
+pattern UnOpExpr' op x s <- s :> UnOpExpr_ op x
 
-pattern CallExpr' :: Expr a -> [Expr a] -> a -> Expr a
-pattern CallExpr' f xs s <- s :< CallExpr_ f xs
+pattern CallExpr' :: Expr a -> [TypeExpr a] -> [Expr a] -> a -> Expr a
+pattern CallExpr' f gs xs s <- s :> CallExpr_ f gs xs
 
 pattern ListExpr' :: [Expr a] -> a -> Expr a
-pattern ListExpr' xs s <- s :< ListExpr_ xs
+pattern ListExpr' xs s <- s :> ListExpr_ xs
 
 pattern TupleExpr' :: [Expr a] -> a -> Expr a
-pattern TupleExpr' xs s <- s :< TupleExpr_ xs
+pattern TupleExpr' xs s <- s :> TupleExpr_ xs
 
 pattern LitExpr' :: Literal -> a -> Expr a
-pattern LitExpr' lit s <- s :< LitExpr_ lit
+pattern LitExpr' lit s <- s :> LitExpr_ lit
 
 pattern StructExpr' :: Map.Map Name (Expr a) -> a -> Expr a
-pattern StructExpr' assocs s <- s :< StructExpr_ assocs
+pattern StructExpr' assocs s <- s :> StructExpr_ assocs
 
 -- Pure patterns
 pattern VarExpr :: Name -> Expr a
@@ -222,8 +264,8 @@ pattern BinOpExpr op x y <- BinOpExpr' op x y _
 pattern UnOpExpr :: UnOp -> Expr a -> Expr a
 pattern UnOpExpr op x <- UnOpExpr' op x _
 
-pattern CallExpr :: Expr a -> [Expr a] -> Expr a
-pattern CallExpr f xs <- CallExpr' f xs _
+pattern CallExpr :: Expr a -> [TypeExpr a] -> [Expr a] -> Expr a
+pattern CallExpr f gs xs <- CallExpr' f gs xs _
 
 pattern ListExpr :: [Expr a] -> Expr a
 pattern ListExpr xs <- ListExpr' xs _
@@ -240,46 +282,47 @@ pattern StructExpr assocs <- StructExpr' assocs _
 instance {-# OVERLAPS #-} Show (Expr a) where
     show = showExpr
 
-data TypeExpr_ expr
+data TypeExpr_ a expr
     = VarTExpr_ Name
-    | GenericTExpr_ Name
     | ListTExpr_ expr
     | TupleTExpr_ [expr]
-    | FnTExpr_  [expr] expr
+    | FnTExpr_  [TypeParam Loc] [expr] expr
     | LitTExpr_ TypeLiteral
     | StructTExpr_ (Map.Map Name expr)
-    deriving (Functor, Foldable, Traversable)
+    --deriving (Functor, Foldable, Traversable)
+
+instance Bifunctor TypeExpr_ where
+    bimap f g (VarTExpr_ v) = VarTExpr_ v
+    bimap f g (ListTExpr_ t) = ListTExpr_ (g t)
+    bimap f g (TupleTExpr_ ts) = TupleTExpr_ (fmap g ts)
+    bimap f g (FnTExpr_ gs ps r) = FnTExpr_ gs (fmap g ps) (g r)
+    bimap f g (LitTExpr_ l) = LitTExpr_ l
+    bimap f g (StructTExpr_ fs) = StructTExpr_ (fmap g fs)
 
 type TypeExpr a = AST TypeExpr_ a
 
 -- State patterns
 pattern VarTExpr' :: Name -> a -> TypeExpr a
-pattern VarTExpr' v s <- s :< VarTExpr_ v
-
-pattern GenericTExpr' :: Name -> a -> TypeExpr a
-pattern GenericTExpr' n s <- s :< GenericTExpr_ n
+pattern VarTExpr' v s <- s :> VarTExpr_ v
 
 pattern ListTExpr' :: TypeExpr a -> a -> TypeExpr a
-pattern ListTExpr' x s <- s :< ListTExpr_ x
+pattern ListTExpr' x s <- s :> ListTExpr_ x
 
 pattern TupleTExpr' :: [TypeExpr a] -> a -> TypeExpr a
-pattern TupleTExpr' xs s <- s :< TupleTExpr_ xs
+pattern TupleTExpr' xs s <- s :> TupleTExpr_ xs
 
-pattern FnTExpr' :: [TypeExpr a] -> TypeExpr a -> a -> TypeExpr a
-pattern FnTExpr' xs ret s <- s :< FnTExpr_ xs ret
+pattern FnTExpr' :: [TypeParam Loc] -> [TypeExpr a] -> TypeExpr a -> a -> TypeExpr a
+pattern FnTExpr' tps xs ret s <- s :> FnTExpr_ tps xs ret
 
 pattern LitTExpr' :: TypeLiteral -> a -> TypeExpr a
-pattern LitTExpr' lit s <- s :< LitTExpr_ lit
+pattern LitTExpr' lit s <- s :> LitTExpr_ lit
 
 pattern StructTExpr' :: Map.Map Name (TypeExpr a) -> a -> TypeExpr a
-pattern StructTExpr' fields s <- s :< StructTExpr_ fields
+pattern StructTExpr' fields s <- s :> StructTExpr_ fields
 
 -- Pure patterns
 pattern VarTExpr :: Name -> TypeExpr a
 pattern VarTExpr v <- VarTExpr' v _
-
-pattern GenericTExpr :: Name -> TypeExpr a
-pattern GenericTExpr n <- GenericTExpr' n _
 
 pattern ListTExpr :: TypeExpr a -> TypeExpr a
 pattern ListTExpr x <- ListTExpr' x _
@@ -287,8 +330,8 @@ pattern ListTExpr x <- ListTExpr' x _
 pattern TupleTExpr :: [TypeExpr a] -> TypeExpr a
 pattern TupleTExpr xs <- TupleTExpr' xs _
 
-pattern FnTExpr :: [TypeExpr a] -> TypeExpr a -> TypeExpr a
-pattern FnTExpr xs ret <- FnTExpr' xs ret _
+pattern FnTExpr :: [TypeParam Loc] -> [TypeExpr a] -> TypeExpr a -> TypeExpr a
+pattern FnTExpr tps xs ret <- FnTExpr' tps xs ret _
 
 pattern LitTExpr :: TypeLiteral -> TypeExpr a
 pattern LitTExpr lit <- LitTExpr' lit _
@@ -298,6 +341,23 @@ pattern StructTExpr fields <- StructTExpr' fields _
 
 instance {-# OVERLAPS #-} Show (TypeExpr a) where
     show = showTypeExpr
+
+data KindExpr_ a expr
+    = TypeKExpr_
+
+instance Bifunctor KindExpr_ where
+    bimap f g TypeKExpr_ = TypeKExpr_
+
+type KindExpr a = AST KindExpr_ a
+
+pattern TypeKExpr' :: a -> KindExpr a
+pattern TypeKExpr' s <- s :> TypeKExpr_
+
+pattern TypeKExpr :: KindExpr a
+pattern TypeKExpr <- TypeKExpr' _
+
+instance {-# OVERLAPS #-} Show (KindExpr a) where
+    show = showKindExpr
 
 data TypeLiteral
     = IntTLit
@@ -346,6 +406,9 @@ paren = surround "(" ")"
 brack :: String -> String
 brack = surround "[" "]"
 
+angle :: String -> String
+angle = surround "<" ">"
+
 showAST :: Program a -> String
 showAST (Program instrs) = showBlock instrs
 
@@ -370,9 +433,10 @@ showInstrWithIndent i n = indent n $ case i of
                        `endl` showBlockWithIndent loop (n+1)
     (ForInstr var iter loop) -> "For " ++ show var ++ " in " ++ paren (show iter)
                          `endl` showBlockWithIndent loop (n+1)
-    (FnInstr (FnDecl name params ret body)) -> "Function " ++ show name
-                                                `endl` indent 1 ("args: " ++ paren (intercalate ", " (map show params)))
-                                                `endl` indent 1 ("returns: " ++ show ret)
+    (FnInstr (FnDecl name tparams params ret body)) -> "Function " ++ show name
+                                                `endl` indent 1 ("type params: " ++ show tparams)
+                                                `endl` indent 1 ("params:      " ++ paren (intercalate ", " (map show params)))
+                                                `endl` indent 1 ("returns:     " ++ show ret)
                                                 `endl` indent 1 "body:"
                                                 `endl` showBlockWithIndent body 1
     (TypeInstr (TypeDecl name fields)) -> "Type " ++ show name
@@ -383,7 +447,8 @@ showExpr (VarExpr n) = "Var " ++ show n
 showExpr (AttrExpr x a) = "Attr " ++ show x ++ " " ++ show a
 showExpr (BinOpExpr op x y) = "BinOp " ++ show op ++ " " ++ paren (show x) ++ " " ++ paren (show y)
 showExpr (UnOpExpr op x) = "UnOp " ++ show op ++ " " ++ paren (show x)
-showExpr (CallExpr f args) = "Call " ++ paren (show f) ++ " " ++ brack (intercalate ", " (map show args))
+showExpr (CallExpr f [] args) = "Call " ++ paren (show f) ++ " " ++ brack (intercalate ", " (map show args))
+showExpr (CallExpr f gs args) = "Call " ++ paren (show f) ++ angle (intercalate ", " (map showTypeExpr gs)) ++ " " ++ brack (intercalate ", " (map show args))
 showExpr (ListExpr xs) = "List " ++ brack (intercalate ", " (map show xs))
 showExpr (TupleExpr xs) = "Tuple " ++ paren (intercalate ", " (map show xs))
 showExpr (LitExpr l) = "Lit " ++ paren (show l)
@@ -391,13 +456,16 @@ showExpr (StructExpr assocs) = "Struct " ++ paren (show assocs)
 
 showTypeExpr :: TypeExpr a -> String
 showTypeExpr (VarTExpr v) = "Var " ++ show v
-showTypeExpr (GenericTExpr n) = "Generic " ++ show n
 showTypeExpr (ListTExpr t) = "List " ++ brack (show t)
 showTypeExpr (TupleTExpr ts) = "Tuple " ++ paren (intercalate ", " (map show ts))
-showTypeExpr (FnTExpr ps r) = "Fn " ++ paren (intercalate ", " (map show ps)) ++ " " ++ show r
+showTypeExpr (FnTExpr [] ps r) = "Fn " ++ paren (intercalate ", " (map show ps)) ++ " " ++ show r
+showTypeExpr (FnTExpr tps ps r) = "Fn " ++ angle (intercalate ", " (map showTypeParam tps)) ++ paren (intercalate ", " (map show ps)) ++ " " ++ show r
+    where showTypeParam (TypeParam k n) = show k ++ " " ++ n
 showTypeExpr (LitTExpr l) = "Lit " ++ show l
 showTypeExpr (StructTExpr fields) = "Struct " ++ paren (show fields)
 
+showKindExpr :: KindExpr a -> String
+showKindExpr TypeKExpr = "Type"
 
 infixl 2 `endl`
 

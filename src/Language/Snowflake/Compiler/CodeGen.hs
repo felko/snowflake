@@ -146,7 +146,7 @@ compileExpr (AttrExpr owner attr) = do
 compileExpr (LitExpr lit) = addInstr =<< (LOAD_CONST <$> newConstant (literalToConstant lit))
 compileExpr (BinOpExpr op a b) = binOp op a b
 compileExpr (UnOpExpr op x) = unOp op x
-compileExpr (CallExpr fn args) = do
+compileExpr (CallExpr fn _ args) = do
     compileExpr fn
     mapM_ compileExpr args
     addInstr $ CALL (genericLength args)
@@ -212,7 +212,7 @@ compileInstr (Decl (Node (WhileInstr cond loop) _)) = do
         addInstr $ JUMP loopOffset
         addInstrs loopInstrs
         addInstr $ JUMP (-offset-4)
-compileInstr (Decl (Node (FnInstr (FnDecl name params _ body)) _)) = do
+compileInstr (Decl (Node (FnInstr (FnDecl name _ params _ body)) _)) = do
     bytecode <- get
     let paramSymbols = map _paramName params
         initSegment  = defaultSegment & segSymbols .~ paramSymbols

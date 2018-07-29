@@ -7,12 +7,14 @@ module Language.Snowflake.Parser.Rules
   , expr, term, varExpr, callExpr, listExpr, tupleExpr, litExpr
   , typeExpr, varTExpr, listTExpr, tupleTExpr, fnTExpr, litTExpr
   , typeLiteral
-  , literal, intLit, boolLit ) where
+  , literal, intLit, boolLit
+  , kindExpr, typeKExpr) where
 
 import Language.Snowflake.Parser.AST
 import Language.Snowflake.Parser.Lexer
 
 import Data.AST
+import Data.Bifunctor
 
 import Control.Applicative ((<$>), (<*>))
 import Data.Functor.Foldable
@@ -37,7 +39,7 @@ loc p = do
 decl :: Parser (n Loc) -> Parser (Decl n Loc)
 decl p = Decl <$> loc p
 
-ast :: Functor n => Parser (Node s (n (AST n s))) -> Parser (AST n s)
+ast :: Bifunctor n => Parser (Node s (n s (AST n s))) -> Parser (AST n s)
 ast = fmap fromNode
 
 program :: Parser (Program Loc)
@@ -52,11 +54,12 @@ fnDecl :: Parser (FnDecl Loc)
 fnDecl = do
     reserved "fn"
     fnName <- identifier
+    fnTParams <- angles (commaSep1 typeParam) <|> pure []
     fnParams <- parens (commaSep param)
     pos <- getPosition
     fnRetType <- try (reservedOp "->" >> typeExpr) <|> pure (terminalVoid LitTExpr_ NoneTLit)
     fnBlock <- block
-    return (FnDecl fnName fnParams fnRetType fnBlock)
+    return (FnDecl fnName fnTParams fnParams fnRetType fnBlock)
 
 typeDecl :: Parser (TypeDecl Loc)
 typeDecl = do
@@ -75,6 +78,9 @@ field = do
 
 param :: Parser (Param Loc)
 param = Param <$> lexeme typeExpr <*> identifier
+
+typeParam :: Parser (TypeParam Loc)
+typeParam = TypeParam <$> lexeme kindExpr <*> identifier
 
 instruction, declareInstr, assignInstr, returnInstr, exprInstr, condInstr, whileInstr, forInstr, fnInstr, typeInstr :: Parser (Decl Instruction Loc)
 instruction =  try fnInstr
@@ -178,8 +184,9 @@ term =  try callExpr
 varExpr = terminal VarExpr_ <$> loc identifier
 callExpr = do
     Node fn l <- loc identifier
+    generics <- angles (commaSep1 typeExpr) <|> pure []
     Node args l' <- loc $ parens (commaSep expr)
-    return . fromNode $ Node (CallExpr_ (terminal VarExpr_ (Node fn l)) args) (l <> l')
+    return . fromNode $ Node (CallExpr_ (terminal VarExpr_ (Node fn l)) generics args) (l <> l')
 listExpr = fromNode . fmap ListExpr_ <$> loc (brackets (commaSep expr))
 tupleExpr = fromNode . fmap TupleExpr_ <$> loc (parens (commaSep expr))
 litExpr = terminal LitExpr_ <$> loc literal
@@ -223,10 +230,11 @@ listTExpr = fromNode . fmap ListTExpr_ <$> loc (brackets typeExpr)
 tupleTExpr = fromNode . fmap TupleTExpr_ <$> loc (parens (commaSep typeExpr))
 fnTExpr = do
     Node _ l <- loc $ reserved "fn"
+    typeParams <- angles (commaSep1 typeParam) <|> pure []
     paramTypes <- parens (many typeExpr)
     reservedOp "->"
     retType <- typeExpr
-    return . fromNode $ Node (FnTExpr_ paramTypes retType) (l <> extract retType)
+    return . fromNode $ Node (FnTExpr_ typeParams paramTypes retType) (l <> extract retType)
 litTExpr = terminal LitTExpr_ <$> loc typeLiteral
 structTExpr = do
     Node fields l <- loc $ Map.fromList <$> braces (many1 field)
@@ -239,3 +247,11 @@ typeLiteral =  try (reserved "int" >> return IntTLit)
            <|> try (reserved "str" >> return StrTLit)
            <|> try (reserved "none" >> return NoneTLit)
            <?> "type literal"
+
+kindExpr, typeKExpr :: Parser (KindExpr Loc)
+kindExpr =  typeKExpr
+        <?> "kind expression"
+
+typeKExpr = do
+    Node _ l <- loc (reserved "Type")
+    return . fromNode $ Node TypeKExpr_ l

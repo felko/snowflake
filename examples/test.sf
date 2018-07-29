@@ -11,3 +11,15 @@ print(p.x);
 
 { float a; float b; } x = { a = 0.0, b = 1.0 };
 print(x);
+
+fn id<Type T>(T x) -> T {
+    return x;
+}
+
+print(id<int>(0));
+
+fn printPair<Type T>(T x, T y) {
+    print(x, y);
+}
+
+printPair<int>(3, "test");

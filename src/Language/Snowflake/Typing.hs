@@ -29,17 +29,18 @@ import qualified Data.ChainMap as Env
 -- typeCheckTypeExpr :: TypeExpr Loc -> ModuleInfo -> TypeEnv -> Either [TypeCheckError] (TypeExpr (Loc, Type))
 -- typeCheckTypeExpr tExpr modInfo ts = runReader (runExceptT (evalStateT (evaluateTypeExpr tExpr) (defaultTCState Env.empty ts))) modInfo
 
-runTypeCheck :: TypeCheckable n => n Loc -> ModuleInfo -> Bindings -> TypeEnv -> Either [TypeCheckError] (n (Loc, Type), TypeCheckState)
+runTypeCheck :: TypeCheckable n => n Loc -> ModuleInfo -> Bindings Type -> TypeEnv -> Either [TypeCheckError] (n (Loc, Type), TypeCheckState)
 runTypeCheck n modInfo bs ts = runReader (runExceptT (runStateT (check n) (defaultTCState bs ts))) modInfo
 
-evalTypeCheck :: TypeCheckable n => n Loc -> ModuleInfo -> Bindings -> TypeEnv -> Either [TypeCheckError] (n (Loc, Type))
+evalTypeCheck :: TypeCheckable n => n Loc -> ModuleInfo -> Bindings Type -> TypeEnv -> Either [TypeCheckError] (n (Loc, Type))
 evalTypeCheck n modInfo bs ts = fst <$> runTypeCheck n modInfo bs ts
 
-execTypeCheck :: TypeCheckable n => n Loc -> ModuleInfo -> Bindings -> TypeEnv -> Either [TypeCheckError] TypeCheckState
+execTypeCheck :: TypeCheckable n => n Loc -> ModuleInfo -> Bindings Type -> TypeEnv -> Either [TypeCheckError] TypeCheckState
 execTypeCheck n modInfo bs ts = snd <$> runTypeCheck n modInfo bs ts
 
-defaultTCState :: Bindings -> TypeEnv -> TypeCheckState
+defaultTCState :: Bindings Type -> TypeEnv -> TypeCheckState
 defaultTCState bs ts = TypeCheckState
-    { _tcBindings = bs
-    , _tcTypeEnv  = ts
-    , _tcExpected = NoneT }
+    { _tcBindings     = bs
+    , _tcTypeBindings = Env.empty
+    , _tcTypeEnv      = ts
+    , _tcExpected     = NoneT }

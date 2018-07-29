@@ -6,11 +6,12 @@
   #-}
 
 module Language.Snowflake.Typing.Types
-  ( Type(..)
-  , showType
+  ( Kind(..)
+  , Type(..)
+  , showKind, showType
   , Bindings
   , TypeEnv
-  , TypeCheckState(..), tcBindings, tcTypeEnv, tcExpected
+  , TypeCheckState(..), tcBindings, tcTypeBindings, tcTypeEnv, tcExpected
   , TypeCheckErrorType(..)
   , TypeCheckError(..)
   , TypeCheck
@@ -45,12 +46,17 @@ data Type
     | FloatT
     | BoolT
     | StrT
-    | FuncT [Type] Type
+    | FuncT [(Kind, Name)] [Type] Type
     | ListT Type
     | TupleT [Type]
     | StructT (Map.Map Name Type)
+    | GenericT Name
     | NoneT
     | AnyT
+    deriving (Eq, Show)
+
+data Kind
+    = TypeK
     deriving (Eq, Show)
 
 showType :: Type -> String
@@ -58,21 +64,28 @@ showType IntT = "int"
 showType FloatT = "float"
 showType BoolT = "bool"
 showType StrT = "str"
-showType (FuncT ps r) = "fn(" ++ intercalate ", " (map showType ps) ++ ") -> " ++ showType r
+showType (FuncT [] ps r) = "fn(" ++ intercalate ", " (map showType ps) ++ ") -> " ++ showType r
+showType (FuncT tps ps r) = "fn<" ++ intercalate ", " (map showTypeParam tps) ++ ">(" ++ intercalate ", " (map showType ps) ++ ") -> " ++ showType r
+    where showTypeParam (k, n) = show k ++ " " ++ n
 showType (ListT t) = "[" ++ showType t ++ "]"
 showType (TupleT ts) = "(" ++ intercalate ", " (map showType ts) ++ ")"
 showType (StructT fields) = "{" ++ intercalate ", " (map showField (Map.assocs fields)) ++ "}"
     where showField (n, t) = show t ++ " " ++ n
+showType (GenericT v) = v
 showType NoneT = "None"
 showType AnyT = "*"
 
-type Bindings = Env.ChainMap Name Type
-type TypeEnv  = Env.ChainMap Name Type
+showKind :: Kind -> String
+showKind TypeK = "Type"
+
+type Bindings a = Env.ChainMap Name a
+type TypeEnv    = Env.ChainMap Name Type
 
 data TypeCheckState = TypeCheckState
-    { _tcBindings :: Bindings
-    , _tcTypeEnv  :: TypeEnv
-    , _tcExpected :: Type }
+    { _tcBindings     :: Bindings Type
+    , _tcTypeBindings :: Bindings Kind
+    , _tcTypeEnv      :: TypeEnv
+    , _tcExpected     :: Type }
     deriving Show
 makeLenses ''TypeCheckState
 
@@ -100,6 +113,10 @@ class IsNode n => TypeCheckable n where
 intersect :: Type -> Type -> TypeCheckM Type
 intersect AnyT t = return t
 intersect t AnyT = return t
+intersect (GenericT n) t' = do
+    tcTypeEnv %= Env.update n t'
+    return t'
+intersect t (GenericT n) = intersect (GenericT n) t
 intersect t t'
     | t == t' = return t
     | otherwise = throwError [] -- raiseTC TCMismatchError ("Failed to intersect " ++ showType t ++ " and " ++ showType t') (sp <> sp')

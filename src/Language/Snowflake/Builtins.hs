@@ -27,10 +27,10 @@ defaultTypeEnv = Map.fromList
     , ("str", StrT) ]
 
 defaultBindings = Map.fromList
-    [ ("print",     FuncT [AnyT] NoneT)
-    , ("input",     FuncT [StrT] StrT)
-    , ("appendInt", FuncT [ListT IntT, IntT] (ListT IntT))
-    , ("parseInt",  FuncT [StrT] IntT) ]
+    [ ("print",     FuncT [] [AnyT] NoneT)
+    , ("input",     FuncT [] [StrT] StrT)
+    , ("appendInt", FuncT [] [ListT IntT, IntT] (ListT IntT))
+    , ("parseInt",  FuncT [] [StrT] IntT) ]
 
 printSF :: Value
 printSF = BuiltinVal $ \ xs -> lift . lift $ do

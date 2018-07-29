@@ -24,7 +24,7 @@ import System.Console.Haskeline
 data REPLState = REPLState
     { _replFile        :: Maybe FilePath
     , _replSettings    :: Settings (StateT REPLState (StateT VMState (ExceptT VMException IO)))
-    , _replBindings    :: Bindings
+    , _replBindings    :: Bindings Type
     , _replLine        :: Int
     , _replErrorOffset :: Int
     , _replRunning     :: Bool }

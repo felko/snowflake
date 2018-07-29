@@ -32,6 +32,7 @@ import Data.Functor.Compose
 import Data.Foldable (foldrM)
 import qualified Data.Map as Map
 import Data.List (intercalate)
+import Data.Tuple (swap)
 
 instance TypeCheckable Program where
     check (Program instrs) = Program <$> check instrs
@@ -82,15 +83,33 @@ instance TypeCheckable (Decl Instruction) where
             cloop <- sandboxCheck loop $ tcs & tcBindings %~ Env.newChild (Map.singleton var t)
             return . Decl $ Node (ForInstr var citer cloop) (loc, NoneT)
         (citer, t) -> raiseTC TCMismatchError ("Expected iterable, got " ++ showType t) (extract iter)
-    check (Decl (Node (FnInstr (FnDecl name params ret body)) loc)) = do
+    check (Decl (Node (FnInstr (FnDecl name tparams params ret body)) loc)) = do
         tcs <- get
-        (cret, tret) <- checkEval ret
-        (cparams, pt) <- unzip <$> mapM checkEval params
-        let ps = Map.fromList $ zip (map _paramName params) pt
-        cbody <- sandboxCheck body $ tcs & tcBindings %~ Env.newChild ps
-                                         & tcExpected .~ tret
-        tcBindings %= Env.insert name (FuncT pt tret)
-        return . Decl $ Node (FnInstr (FnDecl name cparams cret cbody)) (loc, NoneT)
+        let tpt             = [ (evalKind k, n) | TypeParam k n <- tparams]
+            genericBindings = Map.fromList (map swap tpt)
+            genericEnv      = Map.fromList [ (n, GenericT n) | (_, n) <- tpt ]
+            genState = tcs & tcTypeBindings %~ Env.newChild genericBindings
+                           & tcTypeEnv      %~ Env.newChild genericEnv
+        cparams <- mapM (flip sandboxCheck genState) params
+        cret    <- sandboxCheck ret genState
+        let ps        = Map.fromList $ zip (map _paramName params) (map eval cparams)
+            tret      = eval cret
+            pt        = map eval cparams
+            bodyState = genState & tcBindings %~ Env.newChild ps
+                                 & tcExpected .~ tret
+        cbody <- sandboxCheck body bodyState
+        tcBindings %= Env.insert name (FuncT tpt pt tret)
+        return . Decl $ Node (FnInstr (FnDecl name tparams cparams cret cbody)) (loc, NoneT)
+        -- (cret, tret) <- checkEval ret
+        --
+        -- (cparams, pt) <- unzip <$> mapM checkEval params
+        -- let tps = Map.fromList $ zip (map _typeParamName tparams) tpt
+        --     ps  = Map.fromList $ zip (map _paramName params) pt
+        -- cbody <- sandboxCheck body $ tcs & tcBindings %~ Env.newChild ps
+        --                                  & tcTypeEnv  %~ Env.newChild tps
+        --                                  & tcExpected .~ tret
+        -- tcBindings %= Env.insert name (FuncT tpt pt tret)
+        -- return . Decl $ Node (FnInstr (FnDecl name ctparams cparams cret cbody)) (loc, NoneT)
     check (Decl (Node (TypeInstr (TypeDecl name fields)) loc)) = do
         (cfields, tfields) <- unzipMap <$> mapM checkEval fields
         tcTypeEnv %= Env.insert name (StructT tfields)
@@ -99,7 +118,7 @@ instance TypeCheckable (Decl Instruction) where
 instance TypeCheckable Param where
     check (Param t n) = Param <$> check t <*> pure n
 
-instance TypeCheckable (Cofree TypeExpr_) where
+instance TypeCheckable (AST TypeExpr_) where
     check (VarTExpr' var loc) = gets (Env.lookup var . _tcTypeEnv) >>= \case
         Just t  -> return $ fromNode (Node (VarTExpr_ var) (loc, t))
         Nothing -> raiseTC TCUndefinedTypeError ("Type " ++ show var ++ " is undefined") loc
@@ -109,10 +128,16 @@ instance TypeCheckable (Cofree TypeExpr_) where
     check (TupleTExpr' ts loc) = do
         (cts, ts') <- unzip <$> mapM checkEval ts
         return . fromNode $ Node (TupleTExpr_ cts) (loc, TupleT ts')
-    check (FnTExpr' ps ret loc) = do
-        (cps, ps') <- unzip <$> mapM checkEval ps
-        (cret, ret') <- checkEval ret
-        return . fromNode $ Node (FnTExpr_ cps cret) (loc, FuncT ps' ret')
+    check (FnTExpr' tps ps ret loc) = do
+        tcs <- get
+        let tps' = [(evalKind k, n) | TypeParam k n <- tps ]
+        let argState = tcs & tcTypeEnv %~ Env.newChild (Map.fromList [ (n, GenericT n) | (_, n) <- tps' ])
+        cps <- forM ps $ \ p ->
+            sandboxCheck p argState
+        let ps' = map eval cps
+        cret <- sandboxCheck ret argState
+        let ret' = eval cret
+        return . fromNode $ Node (FnTExpr_ tps cps cret) (loc, FuncT tps' ps' ret')
     check (LitTExpr' lit loc) = return . fromNode $ Node (LitTExpr_ lit) (loc, evalTypeLiteral lit)
     check (StructTExpr' fields loc) = do
         (cfields, tfields) <- unzipMap <$> mapM checkEval fields
@@ -128,7 +153,10 @@ evalTypeLiteral BoolTLit = BoolT
 evalTypeLiteral StrTLit = StrT
 evalTypeLiteral NoneTLit = NoneT
 
-instance TypeCheckable (Cofree Expr_) where
+evalKind :: KindExpr a -> Kind
+evalKind TypeKExpr = TypeK
+
+instance TypeCheckable (AST Expr_) where
     check (VarExpr' var loc) = gets (Env.lookup var . _tcBindings) >>= \case
         Just typ -> return . fromNode $ Node (VarExpr_ var) (loc, typ)
         Nothing  -> raiseTC TCScopeError ("Name " ++ show var ++ " is undefined") loc
@@ -221,11 +249,19 @@ instance TypeCheckable (Cofree Expr_) where
         (cx, IntT)   -> return . fromNode $ Node (UnOpExpr_ NegOp cx) (loc, IntT)
         (cx, FloatT) -> return . fromNode $ Node (UnOpExpr_ NegOp cx) (loc, FloatT)
         (cx, tx)     -> raiseTC TCMismatchError ("Cannot negate value of type " ++ showType tx) loc
-    check (CallExpr' f args loc) = checkEval f >>= \case
-        (cf, t@(FuncT ts r)) -> do
+    check (CallExpr' f targs args loc) = checkEval f >>= \case
+        (cf, t@(FuncT tps ts r)) -> do
+            tcs <- get
+            (ctargs, tts') <- unzip <$> mapM checkEval targs
+            -- todo: add kind checking
+            -- sequence_ (zipWith intersect tts tts') <|> raiseTC TCMismatchError ("Couldn't call function of type " ++ showType t ++ " with arguments (" ++ intercalate ", " (map showType ts') ++ ")") loc
+            let argState = tcs & tcTypeEnv %~ Env.newChild (Map.fromList $ zip (map snd tps) tts')
+            cargs <- forM args $ \ arg ->
+                sandboxCheck arg argState
+            let ts' = map eval cargs
             (cargs, ts') <- unzip <$> mapM checkEval args
             sequence_ (zipWith intersect ts ts') <|> raiseTC TCMismatchError ("Couldn't call function of type " ++ showType t ++ " with arguments (" ++ intercalate ", " (map showType ts') ++ ")") loc
-            return . fromNode $ Node (CallExpr_ cf cargs) (loc, r)
+            return . fromNode $ Node (CallExpr_ cf ctargs cargs) (loc, r)
         (cf, t) -> raiseTC TCMismatchError ("Expected function, got " ++ show t) loc
     check (ListExpr' xs loc) = do
         (cxs, ts) <- unzip <$> mapM checkEval xs
