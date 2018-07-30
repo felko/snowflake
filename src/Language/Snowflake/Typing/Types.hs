@@ -18,6 +18,7 @@ module Language.Snowflake.Typing.Types
   , eval, checkEval
   , TypeCheckable(..)
   , sandboxCheck
+  , sandbox
   , intersect
   , raiseTC
   , printError, printErrors
@@ -66,7 +67,7 @@ showType BoolT = "bool"
 showType StrT = "str"
 showType (FuncT [] ps r) = "fn(" ++ intercalate ", " (map showType ps) ++ ") -> " ++ showType r
 showType (FuncT tps ps r) = "fn<" ++ intercalate ", " (map showTypeParam tps) ++ ">(" ++ intercalate ", " (map showType ps) ++ ") -> " ++ showType r
-    where showTypeParam (k, n) = show k ++ " " ++ n
+    where showTypeParam (k, n) = showKind k ++ " " ++ n
 showType (ListT t) = "[" ++ showType t ++ "]"
 showType (TupleT ts) = "(" ++ intercalate ", " (map showType ts) ++ ")"
 showType (StructT fields) = "{" ++ intercalate ", " (map showField (Map.assocs fields)) ++ "}"
@@ -113,16 +114,28 @@ class IsNode n => TypeCheckable n where
 intersect :: Type -> Type -> TypeCheckM Type
 intersect AnyT t = return t
 intersect t AnyT = return t
-intersect (GenericT n) t' = do
-    tcTypeEnv %= Env.update n t'
-    return t'
+intersect (GenericT n) (GenericT m)
+    | n == m    = return (GenericT n)
+    | otherwise = throwError []
+intersect (GenericT n) t' = gets (Env.lookup n . _tcTypeEnv) >>= \case
+    Just (GenericT _) -> throwError []
+    Just t -> intersect t t'
+    Nothing -> throwError []
 intersect t (GenericT n) = intersect (GenericT n) t
 intersect t t'
-    | t == t' = return t
+    | t == t'   = return t
     | otherwise = throwError [] -- raiseTC TCMismatchError ("Failed to intersect " ++ showType t ++ " and " ++ showType t') (sp <> sp')
 
 sandboxCheck :: TypeCheckable n => n Loc -> TypeCheckState -> TypeCheckM (n (Loc, Type))
 sandboxCheck n tcs = lift $ evalStateT (check n) tcs
+
+sandbox :: TypeCheckState -> TypeCheckM a -> TypeCheckM a
+sandbox s m = do
+    s' <- get
+    put s
+    r <- m
+    put s'
+    return r
 
 eval :: TypeCheckable n => n (Loc, Type) -> Type
 eval = snd . nodeData

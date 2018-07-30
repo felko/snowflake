@@ -34,6 +34,8 @@ import qualified Data.Map as Map
 import Data.List (intercalate)
 import Data.Tuple (swap)
 
+import Debug.Trace
+
 instance TypeCheckable Program where
     check (Program instrs) = Program <$> check instrs
 
@@ -256,11 +258,10 @@ instance TypeCheckable (AST Expr_) where
             -- todo: add kind checking
             -- sequence_ (zipWith intersect tts tts') <|> raiseTC TCMismatchError ("Couldn't call function of type " ++ showType t ++ " with arguments (" ++ intercalate ", " (map showType ts') ++ ")") loc
             let argState = tcs & tcTypeEnv %~ Env.newChild (Map.fromList $ zip (map snd tps) tts')
-            cargs <- forM args $ \ arg ->
-                sandboxCheck arg argState
+            cargs <- mapM (flip sandboxCheck argState) args -- & tcExpected .~ t'
             let ts' = map eval cargs
-            (cargs, ts') <- unzip <$> mapM checkEval args
-            sequence_ (zipWith intersect ts ts') <|> raiseTC TCMismatchError ("Couldn't call function of type " ++ showType t ++ " with arguments (" ++ intercalate ", " (map showType ts') ++ ")") loc
+            --(cargs, ts') <- unzip <$> mapM checkEval args
+            sandbox argState $ sequence_ (zipWith intersect ts ts') <|> raiseTC TCMismatchError ("Couldn't call function of type " ++ showType t ++ " with arguments (" ++ intercalate ", " (map showType ts') ++ ")") loc
             return . fromNode $ Node (CallExpr_ cf ctargs cargs) (loc, r)
         (cf, t) -> raiseTC TCMismatchError ("Expected function, got " ++ show t) loc
     check (ListExpr' xs loc) = do
