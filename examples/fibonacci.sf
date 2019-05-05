@@ -2,7 +2,7 @@ fn fibonacci(int n) -> int {
     int u = 1;
     int v = 1;
     int k = 0;
-    while (k <= n) {
+    while (k <= n - 3) {
         int w = u + v;
         u = v;
         v = w;

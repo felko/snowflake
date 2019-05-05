@@ -17,6 +17,7 @@ cabal-version:       >=1.10
 
 executable snowflake
   main-is:             Main.hs
+  ghc-options:         -O2
   other-modules:       Data.ChainMap
                      , Data.AST
                      , Language.Snowflake

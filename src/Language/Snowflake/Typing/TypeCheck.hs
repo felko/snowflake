@@ -97,7 +97,7 @@ instance TypeCheckable (Decl Instruction) where
         let ps        = Map.fromList $ zip (map _paramName params) (map eval cparams)
             tret      = eval cret
             pt        = map eval cparams
-            bodyState = genState & tcBindings %~ Env.newChild ps
+            bodyState = genState & tcBindings %~ Env.insert name (FuncT tpt pt tret) . Env.newChild ps
                                  & tcExpected .~ tret
         cbody <- sandboxCheck body bodyState
         tcBindings %= Env.insert name (FuncT tpt pt tret)
@@ -215,6 +215,9 @@ instance TypeCheckable (AST Expr_) where
         ((cx, FloatT), (cy, FloatT)) -> return . fromNode $ Node (BinOpExpr_ PowOp cx cy) (loc, FloatT)
         ((cx, tx), (cy, ty))         -> raiseTC TCMismatchError ("Cannot exponentiate value of type " ++ showType tx ++ " to value of type " ++ showType ty) loc
     check (BinOpExpr' op x y loc)
+        | op `elem` [AndOp, OrOp] = (,) <$> checkEval x <*> checkEval y >>= \case
+            ((cx, BoolT), (cy, BoolT)) -> return . fromNode $ Node (BinOpExpr_ op cx cy) (loc, BoolT)
+            ((cx, tx), (cy, ty)) -> raiseTC TCMismatchError ("Excpected boolean values, got" ++ show tx ++ " and " ++ showType ty) loc
         | op `elem` [GTOp, GEOp, LEOp, LTOp] = (,) <$> checkEval x <*> checkEval y >>= \case
             ((cx, AnyT), (cy, t))        -> return . fromNode $ Node (BinOpExpr_ op cx cy) (loc, BoolT)
             ((cx, t), (cy, AnyT))        -> return . fromNode $ Node (BinOpExpr_ op cx cy) (loc, BoolT)
